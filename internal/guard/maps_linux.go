@@ -154,3 +154,17 @@ func CheckPolicy(dir string, expected Policy, settings Settings) (ebpf.MapID, er
 	}
 	return id, nil
 }
+
+// SettingsABI is used after live verification to preserve the rollback ABI.
+func SettingsABI(pins string) (uint32, error) {
+	settings, err := openMap(pins, "settings")
+	if err != nil {
+		return 0, err
+	}
+	defer settings.Close()
+	size := settings.ValueSize()
+	if size != 8 && size != 12 {
+		return 0, fmt.Errorf("unsupported guard settings size %d", size)
+	}
+	return size, nil
+}

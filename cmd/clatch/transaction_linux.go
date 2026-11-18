@@ -2,7 +2,11 @@
 
 package main
 
-import "clatch-gateway/internal/gateway"
+import (
+	"path/filepath"
+
+	"clatch-gateway/internal/gateway"
+)
 
 func runPolicy(args []string) (any, error) {
 	var source string
@@ -13,9 +17,13 @@ func runPolicy(args []string) (any, error) {
 	default:
 		return nil, errUsage
 	}
-	status, err := gateway.PolicyTransaction(args[0], args[1], args[2], source)
+	return policyResult(args[0], args[1], args[2], source, "")
+}
+
+func policyResult(action, config, directory, source, geoIP string) (any, error) {
+	status, err := gateway.PolicyTransaction(action, config, directory, source, geoIP)
 	if err != nil {
 		return nil, err
 	}
-	return map[string]string{"state": status, "transaction": args[2] + "/transaction.json"}, nil
+	return map[string]string{"state": status, "transaction": filepath.Join(directory, "transaction.json")}, nil
 }

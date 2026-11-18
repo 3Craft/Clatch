@@ -64,7 +64,7 @@ func nativeLifecycle(path, confdir string, bind, hook bool) (map[string]any, err
 		}
 		var candidate native.Snapshot
 		if bind {
-			if err := native.CheckApproved(gate.Config, gate.Approved); err != nil {
+			if err := validateNativeHookSource(gate); err != nil {
 				return err
 			}
 			candidate, err = native.Inspect(gate.Config)
@@ -324,4 +324,27 @@ func (g *Gate) collectNative(previous string) error {
 	}
 	record.Generations = kept
 	return putJSON(path, record)
+}
+
+func validateNativeHookSource(gate *Gate) error {
+	tx, exists, err := savedTransaction(gate.Config, gate.Path)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return native.CheckApproved(gate.Config, gate.Approved)
+	}
+	boot, err := bootID()
+	if err != nil {
+		return err
+	}
+	if tx.BootID != boot || tx.State != "staged" ||
+		gate.Approved.NetworkSHA256 != tx.Restricted.NetworkSHA256 {
+		return fmt.Errorf("recover native policy transaction before starting the core")
+	}
+	if native.CheckApproved(gate.Config, tx.Desired) != nil &&
+		native.CheckApproved(gate.Config, tx.Old) != nil {
+		return fmt.Errorf("native settings match neither side of the approved policy transaction")
+	}
+	return nil
 }

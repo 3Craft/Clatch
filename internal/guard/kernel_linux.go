@@ -15,7 +15,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const programName = "gateway_egress"
+const (
+	programName = "gateway_egress"
+	wanProgram  = "wan_egress"
+)
 
 var mapNames = [...]string{"policy_sets", "settings", "counters"}
 
@@ -50,7 +53,7 @@ type ActivePolicy struct {
 	Entries [][3]any   `json:"entries"`
 }
 
-func loadCollection(path string) (*ebpf.Collection, error) {
+func loadCollection(path, name string) (*ebpf.Collection, error) {
 	var spec *ebpf.CollectionSpec
 	var err error
 	if path == "-" {
@@ -64,13 +67,19 @@ func loadCollection(path string) (*ebpf.Collection, error) {
 	if err != nil {
 		return nil, err
 	}
-	if program := spec.Programs[programName]; program == nil ||
+	if program := spec.Programs[name]; program == nil ||
 		program.Type != ebpf.SchedCLS || program.AttachType != ebpf.AttachTCXEgress {
 		return nil, errors.New("object has no compatible TCX egress program")
 	}
-	for _, name := range mapNames {
-		if spec.Maps[name] == nil {
-			return nil, fmt.Errorf("object lacks map %s", name)
+	for _, mapName := range mapNames {
+		if spec.Maps[mapName] == nil {
+			return nil, fmt.Errorf("object lacks map %s", mapName)
+		}
+	}
+	// Load only the program selected for this attachment.
+	for symbol := range spec.Programs {
+		if symbol != name {
+			delete(spec.Programs, symbol)
 		}
 	}
 	return ebpf.NewCollection(spec)
@@ -115,7 +124,7 @@ func newPolicy(entries Policy) (*ebpf.Map, error) {
 	return m, nil
 }
 
-func createGeneration(object, dir string, entries Policy, settings Settings) (*ebpf.Collection, error) {
+func createGeneration(object, dir string, entries Policy, settings Settings, allowLegacy bool, program string) (*ebpf.Collection, error) {
 	if err := validateSettings(settings); err != nil {
 		return nil, err
 	}
@@ -134,7 +143,7 @@ func createGeneration(object, dir string, entries Policy, settings Settings) (*e
 		return nil, err
 	}
 	defer inner.Close()
-	collection, err := loadCollection(object)
+	collection, err := loadCollection(object, program)
 	if err != nil {
 		return nil, err
 	}
@@ -150,7 +159,16 @@ func createGeneration(object, dir string, entries Policy, settings Settings) (*e
 		return nil, fmt.Errorf("install initial policy: %w", err)
 	}
 	config := collection.Maps["settings"]
-	if err := config.Update(&zero, &settings, ebpf.UpdateAny); err != nil {
+	var value any = &settings
+	legacy := config.ValueSize() == 8
+	switch {
+	case legacy && allowLegacy && settings.TrustedTUNIfindex == 0:
+		value = &[2]uint32{settings.DiagnosticUID, settings.PublicIPv6}
+	case config.ValueSize() == 12 && !allowLegacy:
+	default:
+		return nil, fmt.Errorf("BPF settings ABI differs from the selected attachment mode")
+	}
+	if err := config.Update(&zero, value, ebpf.UpdateAny); err != nil {
 		return nil, fmt.Errorf("initialize guard settings: %w", err)
 	}
 	if err := config.Freeze(); err != nil {
@@ -169,10 +187,10 @@ func createGeneration(object, dir string, entries Policy, settings Settings) (*e
 			return nil, err
 		}
 	}
-	if err := collection.Programs[programName].Pin(filepath.Join(dir, "program")); err != nil {
+	if err := collection.Programs[program].Pin(filepath.Join(dir, "program")); err != nil {
 		return nil, err
 	}
-	if _, _, err := verifyMaps(collection.Programs[programName], dir, false); err != nil {
+	if _, _, err := verifyProgramMaps(collection.Programs[program], dir, legacy, program); err != nil {
 		return nil, err
 	}
 	failed = false
@@ -180,7 +198,7 @@ func createGeneration(object, dir string, entries Policy, settings Settings) (*e
 }
 
 func Prepare(object, dir string, policy Policy, settings Settings) (Prepared, error) {
-	collection, err := createGeneration(object, dir, policy, settings)
+	collection, err := createGeneration(object, dir, policy, settings, false, programName)
 	if err != nil {
 		return Prepared{}, err
 	}
@@ -206,6 +224,19 @@ func query(index int) (*link.QueryResult, error) {
 }
 
 func Attach(iface, object, dir string, policy Policy, settings Settings) (LinkInfo, error) {
+	return attach(iface, object, dir, policy, settings, false, programName)
+}
+
+// AttachLegacy keeps the previous non-TUN settings ABI available for rollback.
+func AttachLegacy(iface, object, dir string, policy Policy, settings Settings) (LinkInfo, error) {
+	return attach(iface, object, dir, policy, settings, true, programName)
+}
+
+func AttachWAN(iface, object, dir string, policy Policy, settings Settings) (LinkInfo, error) {
+	return attach(iface, object, dir, policy, settings, false, wanProgram)
+}
+
+func attach(iface, object, dir string, policy Policy, settings Settings, legacy bool, program string) (LinkInfo, error) {
 	index, err := interfaceIndex(iface)
 	if err != nil {
 		return LinkInfo{}, err
@@ -220,7 +251,7 @@ func Attach(iface, object, dir string, policy Policy, settings Settings) (LinkIn
 	if len(chain.Programs) != 0 || chain.Revision == 0 {
 		return LinkInfo{}, errors.New("TCX egress is occupied or lacks revision support")
 	}
-	collection, err := createGeneration(object, dir, policy, settings)
+	collection, err := createGeneration(object, dir, policy, settings, legacy, program)
 	if err != nil {
 		return LinkInfo{}, err
 	}
@@ -233,7 +264,7 @@ func Attach(iface, object, dir string, policy Policy, settings Settings) (LinkIn
 	}()
 
 	attached, err := link.AttachTCX(link.TCXOptions{
-		Interface: index, Program: collection.Programs[programName], Attach: ebpf.AttachTCXEgress,
+		Interface: index, Program: collection.Programs[program], Attach: ebpf.AttachTCXEgress,
 		Anchor: link.Head(), ExpectedRevision: chain.Revision,
 	})
 	if err != nil {
@@ -243,7 +274,7 @@ func Attach(iface, object, dir string, policy Policy, settings Settings) (LinkIn
 	if err := attached.Pin(filepath.Join(dir, "link")); err != nil {
 		return LinkInfo{}, err
 	}
-	info, err := verifyAt(index, dir, false)
+	info, err := verifyProgramAt(index, dir, legacy, program)
 	ok = err == nil
 	return info, err
 }
@@ -261,13 +292,17 @@ func programID(prog *ebpf.Program) (ebpf.ProgramID, error) {
 }
 
 func verifyMaps(prog *ebpf.Program, dir string, legacy bool) (ebpf.ProgramID, uint32, error) {
+	return verifyProgramMaps(prog, dir, legacy, programName)
+}
+
+func verifyProgramMaps(prog *ebpf.Program, dir string, legacy bool, name string) (ebpf.ProgramID, uint32, error) {
 	info, err := prog.Info()
 	if err != nil {
 		return 0, 0, err
 	}
 	ids, available := info.MapIDs()
 	id, identified := info.ID()
-	if !available || len(ids) != len(mapNames) || !identified || info.Type != ebpf.SchedCLS || info.Name != programName {
+	if !available || len(ids) != len(mapNames) || !identified || info.Type != ebpf.SchedCLS || info.Name != name {
 		return 0, 0, errors.New("unexpected egress program type, name or map count")
 	}
 	types := [...]ebpf.MapType{ebpf.ArrayOfMaps, ebpf.Array, ebpf.PerCPUArray}
@@ -311,6 +346,10 @@ func openMap(dir, name string) (*ebpf.Map, error) {
 }
 
 func verifyAt(index int, dir string, legacy bool) (LinkInfo, error) {
+	return verifyProgramAt(index, dir, legacy, programName)
+}
+
+func verifyProgramAt(index int, dir string, legacy bool, program string) (LinkInfo, error) {
 	attached, err := link.LoadPinnedLink(filepath.Join(dir, "link"), nil)
 	if err != nil {
 		return LinkInfo{}, err
@@ -340,7 +379,7 @@ func verifyAt(index int, dir string, legacy bool) (LinkInfo, error) {
 		return LinkInfo{}, err
 	}
 	defer prog.Close()
-	if _, _, err := verifyMaps(prog, dir, legacy); err != nil {
+	if _, _, err := verifyProgramMaps(prog, dir, legacy, program); err != nil {
 		return LinkInfo{}, err
 	}
 	return LinkInfo{Ifindex: tc.Ifindex, LinkID: info.ID, ProgramID: info.Program}, nil
@@ -378,4 +417,12 @@ func removePins(dir string, removeLink bool) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func VerifyWAN(iface, dir string) (LinkInfo, error) {
+	index, err := interfaceIndex(iface)
+	if err != nil {
+		return LinkInfo{}, err
+	}
+	return verifyProgramAt(index, dir, false, wanProgram)
 }

@@ -201,7 +201,15 @@ func Prune(iface, active, old string) (map[string]uint32, error) {
 }
 
 func Detach(iface, dir string) error {
-	current, err := Verify(iface, dir)
+	return detach(iface, dir, Verify)
+}
+
+func DetachWAN(iface, dir string) error {
+	return detach(iface, dir, VerifyWAN)
+}
+
+func detach(iface, dir string, verify func(string, string) (LinkInfo, error)) error {
+	current, err := verify(iface, dir)
 	if err != nil {
 		return err
 	}

@@ -94,10 +94,8 @@ func ensure(path, iface string) (map[string]any, error) {
 	if config.Interface != iface {
 		return nil, fmt.Errorf("configured interface differs from trusted gate")
 	}
-	if config.Proxy != nil {
-		if err := recoverPolicy(config, path); err != nil {
-			return nil, err
-		}
+	if err := recoverPolicy(config, path); err != nil {
+		return nil, err
 	}
 	gate, err := open(path)
 	if err != nil {
@@ -143,7 +141,7 @@ func ensure(path, iface string) (map[string]any, error) {
 		return nil, err
 	}
 	if create {
-		if _, err := guard.Attach(iface, "-", gate.Config.Pins, gate.Config.Entries(gate.Approved), settings); err != nil {
+		if err := gate.attachBoot(iface, settings); err != nil {
 			return nil, err
 		}
 	}

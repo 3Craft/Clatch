@@ -1,4 +1,4 @@
-# Clatch Gateway
+# Clatch
 
 Fail-closed egress protection for Linux proxy gateways. nftables and a pinned
 TCX egress program enforce the approved direct destinations independently.
@@ -44,13 +44,68 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
 - Validate v2rayA's live ephemeral TUN identity and approved GeoIP/whitelist
   data. Manage native TUN return authorization and the LAN DNS redirect
   through the v2rayA transparent proxy lifecycle hook.
-- Stage standalone policy updates through the intersection of old and new
-  CIDRs. Require a matching source and DNS readiness before committing.
+- Stage policy updates through the intersection of old and new CIDRs. Require
+  a matching source and DNS readiness before committing. The v2rayA whitelist
+  command previews edits, backs up SQLite and supports recovery and restore.
 - Run Debian ping and traceroute through the restricted diagnostic account.
+- Migrate an existing Debian 13 gateway with its current configuration,
+  approved policy and pinned TCX link. Confirm or roll back the change using
+  the migration backup.
+- Guard routed OpenWrt IPv4 WAN interfaces before netifd applies a static
+  address or starts DHCP. The separate WAN TCX program checks destinations
+  after masquerading.
 
-The installer, v2rayA whitelist transactions and OpenWrt network startup
-integration are in development. Use disposable clones for migration testing.
-See [verification](docs/verification.md) for the exercised paths.
+## Migrate an existing Debian gateway
+
+Run the commands on a disposable clone first. Keep the backup on a persistent
+local filesystem and use a new absolute path. The plan checks the running
+legacy guard, installed interception mode and approved policy.
+
+```sh
+./clatch-linux-amd64 migrate plan
+./clatch-linux-amd64 migrate apply /root/clatch-migration
+gateway-guard verify
+clatch migrate confirm /root/clatch-migration
+```
+
+The migration arms a systemd rollback timer before replacing the entry
+points. Confirm after checking the guard, DNS and expected routes. Use
+`/root/clatch-migration/clatch-recover migrate rollback /root/clatch-migration`
+to restore the previous entry points, including after confirmation.
+
+## OpenWrt
+
+The routed WAN profile uses netifd, firewall4, `ip-full` and `tc-tiny`. The
+kernel must support pinned TCX egress links. The profile is intentionally
+IPv4-only. Any proxy runs as a separate service and its endpoint needs an
+explicit entry in the direct policy. Set `proxy_device` only for a TUN device
+you control and configure the proxy's capture and DNS separately.
+
+Configure the logical uplink and its physical Ethernet device in
+`deploy/openwrt/openwrt.example.json`. Use the example policy format for your
+approved IPv4 destinations. Install the release binary as `/usr/sbin/clatch`,
+the configuration as `/etc/clatch/openwrt.json`, and the policy at the path
+given in that configuration. Place `clatch_static.sh` in `/lib/netifd/proto/`.
+Generate `clatch_dhcp.sh` from the installed OpenWrt DHCP handler and install
+it in the same directory for DHCP uplinks.
+
+```sh
+tmp=$(mktemp /lib/netifd/proto/.clatch-dhcp.XXXXXX)
+sh generate-dhcp.sh > "$tmp" && chmod 0755 "$tmp" &&
+    mv "$tmp" /lib/netifd/proto/clatch_dhcp.sh
+```
+
+From the local console, configure each external IPv4 interface with
+`proto=clatch_static` or `proto=clatch_dhcp` and its exact UCI `device`.
+Disable separate WAN IPv6 interfaces and flow offload before enabling the
+guarded uplinks. Check each uplink after bringing network and firewall up.
+
+```sh
+clatch openwrt verify /etc/clatch/openwrt.json wan eth1
+```
+
+The [verification report](docs/verification.md) records the tested backends,
+hardware targets and failure cases.
 
 ## Inspect a compatible snapshot
 

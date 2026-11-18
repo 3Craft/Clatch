@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "lan_devices": ["br-lan"],
+  "lan": ["192.168.56.0/24"],
+  "uplinks": [
+    {"network": "wan", "device": "eth1"}
+  ],
+  "policy": "/etc/clatch/policy.json"
+}

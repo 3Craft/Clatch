@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"clatch-gateway/internal/policy"
 )
@@ -22,57 +23,151 @@ type whitelist struct {
 	Custom    []string `json:"customIps"`
 }
 
-func CheckApproved(config policy.Config, approved policy.Approved) error {
-	var current, expected whitelist
+// ReadWhitelist returns the complete SQLite value, including fields owned by v2rayA.
+func ReadWhitelist(config policy.Config) (json.RawMessage, error) {
+	var current json.RawMessage
 	if err := readSetting(config.NativeConfDir, whitelistKey, &current); err != nil {
-		return err
+		return nil, err
 	}
-	if err := json.Unmarshal(approved.Whitelist, &expected); err != nil {
-		return fmt.Errorf("invalid approved native whitelist")
+	_, err := decodeWhitelist(current)
+	return current, err
+}
+
+func decodeWhitelist(raw json.RawMessage) (whitelist, error) {
+	var data whitelist
+	if err := json.Unmarshal(raw, &data); err != nil || data.Countries == nil || data.Custom == nil {
+		return whitelist{}, fmt.Errorf("invalid native whitelist")
 	}
-	for _, countries := range [][]string{current.Countries, expected.Countries} {
-		normalized := make([]string, 0, len(countries))
-		for _, country := range countries {
-			normalized = append(normalized, strings.ToUpper(country))
+	countries := make([]string, 0, len(data.Countries))
+	for _, country := range data.Countries {
+		countries = append(countries, strings.ToUpper(country))
+	}
+	slices.Sort(countries)
+	if !slices.Equal(slices.Compact(countries), []string{"CN", "PRIVATE"}) {
+		return whitelist{}, fmt.Errorf("native whitelist requires the CN and PRIVATE GeoIP groups")
+	}
+	return data, nil
+}
+
+func SameWhitelist(a, b json.RawMessage) bool {
+	// Both values have already been validated. Marshal preserves unknown
+	// members, and UseNumber avoids rounding v2rayA-owned numeric values.
+	canonical := func(value json.RawMessage) ([]byte, error) {
+		var decoded map[string]any
+		decoder := json.NewDecoder(bytes.NewReader(value))
+		decoder.UseNumber()
+		if err := decoder.Decode(&decoded); err != nil {
+			return nil, err
 		}
-		slices.Sort(normalized)
-		if !slices.Equal(slices.Compact(normalized), []string{"CN", "PRIVATE"}) {
-			return fmt.Errorf("native whitelist requires the CN and PRIVATE GeoIP groups")
+		return json.Marshal(decoded)
+	}
+	first, err := canonical(a)
+	if err != nil {
+		return false
+	}
+	second, err := canonical(b)
+	return err == nil && bytes.Equal(first, second)
+}
+
+func CheckWhitelist(config policy.Config, approved policy.Approved) error {
+	current, err := ReadWhitelist(config)
+	if err != nil {
+		return err
+	}
+	if !SameWhitelist(current, approved.Whitelist) {
+		return fmt.Errorf("native whitelist differs from the approved snapshot")
+	}
+	return nil
+}
+
+// Approval expands the exact whitelist value using the selected GeoIP data.
+func Approval(config policy.Config, raw json.RawMessage, path string) (policy.Approved, error) {
+	data, err := decodeWhitelist(raw)
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	if path == "" {
+		path, err = activeGeoIP(config)
+		if err != nil {
+			return policy.Approved{}, err
 		}
 	}
-	direct, err := policy.Parse(current.Custom)
+	if !filepath.IsAbs(path) {
+		return policy.Approved{}, fmt.Errorf("GeoIP path must be absolute")
+	}
+	path, err = filepath.EvalSymlinks(path)
 	if err != nil {
+		return policy.Approved{}, err
+	}
+	file, err := os.ReadFile(path)
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	groups, err := decodeGeoIP(file)
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	all := append(slices.Clone(groups["CN"]), groups["PRIVATE"]...)
+	prefixes, err := policy.Parse(append(all, data.Custom...))
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	return config.ValidateApproved(policy.Approved{
+		Schema: 1, Created: time.Now().Format(time.RFC3339Nano), NativeMode: "tun",
+		Networks: policy.Strings(prefixes), NetworkSHA256: policy.Digest(prefixes),
+		Whitelist: raw, GeoIP: path, GeoIPSHA256: fmt.Sprintf("%x", sha256.Sum256(file)),
+	})
+}
+
+func CheckApproved(config policy.Config, approved policy.Approved) error {
+	if err := CheckWhitelist(config, approved); err != nil {
 		return err
 	}
-	prior, err := policy.Parse(expected.Custom)
+	return checkGeoIPApproval(config, approved, "")
+}
+
+func GeoIPCounts(approved policy.Approved) (map[string]map[string]int, error) {
+	data, err := os.ReadFile(approved.GeoIP)
 	if err != nil {
-		return err
-	}
-	if !slices.Equal(direct, prior) {
-		return fmt.Errorf("native custom bypass differs from the approved snapshot")
-	}
-	path, err := activeGeoIP(config)
-	if err != nil {
-		return err
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return err
+		return nil, err
 	}
 	if fmt.Sprintf("%x", sha256.Sum256(data)) != approved.GeoIPSHA256 {
-		return fmt.Errorf("native GeoIP file differs from the approved snapshot")
+		return nil, fmt.Errorf("native GeoIP changed while reading the whitelist")
 	}
 	groups, err := decodeGeoIP(data)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	all := append(slices.Clone(groups["CN"]), groups["PRIVATE"]...)
-	all = append(all, policy.Strings(direct)...)
-	prefixes, err := policy.Parse(all)
+	counts := make(map[string]map[string]int, len(groups))
+	for code, prefixes := range groups {
+		counts[code] = map[string]int{"ipv4": 0, "ipv6": 0}
+		for _, prefix := range prefixes {
+			family := "ipv4"
+			if strings.Contains(prefix, ":") {
+				family = "ipv6"
+			}
+			counts[code][family]++
+		}
+	}
+	return counts, nil
+}
+
+func CheckSavedGeoIP(config policy.Config, approved policy.Approved) error {
+	if approved.GeoIP == "" {
+		return fmt.Errorf("approved snapshot has no GeoIP path")
+	}
+	return checkGeoIPApproval(config, approved, approved.GeoIP)
+}
+
+func checkGeoIPApproval(config policy.Config, approved policy.Approved, path string) error {
+	actual, err := Approval(config, approved.Whitelist, path)
 	if err != nil {
 		return err
 	}
-	if policy.Digest(prefixes) != approved.NetworkSHA256 {
+	if actual.GeoIPSHA256 != approved.GeoIPSHA256 {
+		return fmt.Errorf("native GeoIP file differs from the approved snapshot")
+	}
+	if actual.NetworkSHA256 != approved.NetworkSHA256 {
 		return fmt.Errorf("expanded native whitelist differs from approved destinations")
 	}
 	return nil

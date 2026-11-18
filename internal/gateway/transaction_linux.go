@@ -16,6 +16,7 @@ import (
 
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
+	"clatch-gateway/internal/native"
 	"clatch-gateway/internal/policy"
 	"clatch-gateway/internal/system"
 )
@@ -38,7 +39,7 @@ func transactionFile(directory string) string {
 	return filepath.Join(directory, "transaction.json")
 }
 
-func PolicyTransaction(action, path, dir, source string) (string, error) {
+func PolicyTransaction(action, path, dir, source, geoIP string) (string, error) {
 	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || dir == "/" {
 		return "", fmt.Errorf("transaction directory must be a canonical absolute path")
 	}
@@ -50,7 +51,7 @@ func PolicyTransaction(action, path, dir, source string) (string, error) {
 	err = WithLock(func() error {
 		switch action {
 		case "stage":
-			result, err = stagePolicy(path, dir, source)
+			result, err = stagePolicy(path, dir, source, geoIP)
 		case "commit", "rollback":
 			result, err = finishPolicy(path, dir, action)
 		default:
@@ -61,8 +62,60 @@ func PolicyTransaction(action, path, dir, source string) (string, error) {
 	return result, err
 }
 
-func stagePolicy(path, directory, input string) (string, error) {
-	gate, err := OpenStandalone(path)
+func InspectPolicy(path, geoIP string) (policy.Approved, error) {
+	var result policy.Approved
+	err := WithLock(func() error {
+		config, err := policy.ReadConfig(path)
+		if err != nil {
+			return err
+		}
+		result, err = approvalFromSource(config, "", geoIP)
+		return err
+	})
+	return result, err
+}
+
+func stagePolicy(path, directory, input, geoIP string) (string, error) {
+	gate, err := open(path)
+	if err != nil {
+		return "", err
+	}
+	next, err := approvalFromSource(gate.Config, input, geoIP)
+	if err != nil {
+		return "", err
+	}
+	return stageApproval(gate, directory, next)
+}
+
+func approvalFromSource(config policy.Config, input, geoIP string) (policy.Approved, error) {
+	if config.NativeTUN {
+		var raw json.RawMessage
+		var err error
+		if input == "" {
+			raw, err = native.ReadWhitelist(config)
+		} else {
+			raw, err = os.ReadFile(input)
+		}
+		if err != nil {
+			return policy.Approved{}, err
+		}
+		return native.Approval(config, raw, geoIP)
+	}
+	if config.Proxy == nil || geoIP != "" {
+		return policy.Approved{}, fmt.Errorf("standalone policy requires a configured backend and explicit CIDRs")
+	}
+	if input == "" {
+		input = config.Proxy.PolicySource
+	}
+	source, err := policy.ReadSource(input)
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	return config.ApprovalFor(source)
+}
+
+func stageApproval(gate *Gate, directory string, next policy.Approved) (string, error) {
+	path, err := filepath.Abs(gate.Path)
 	if err != nil {
 		return "", err
 	}
@@ -74,13 +127,10 @@ func stagePolicy(path, directory, input string) (string, error) {
 	if _, err := gate.Verify(); err != nil {
 		return "", err
 	}
-	source, err := policy.ReadSource(input)
-	if err != nil {
-		return "", err
-	}
-	next, err := gate.Config.ApprovalFor(source)
-	if err != nil {
-		return "", err
+	if gate.Config.NativeTUN {
+		if err := native.CheckWhitelist(gate.Config, gate.Approved); err != nil {
+			return "", err
+		}
 	}
 	restricted, err := restrictPolicy(gate.Config, gate.Approved, next)
 	if err != nil {
@@ -146,7 +196,7 @@ func savedTransaction(config policy.Config, path string) (policyTransaction, boo
 	if err != nil {
 		return tx, false, err
 	}
-	if tx.Schema != 1 || tx.Config != canonical || config.Proxy == nil {
+	if tx.Schema != 1 || tx.Config != canonical || config.Proxy == nil && !config.NativeTUN {
 		return tx, false, fmt.Errorf("policy transaction belongs to another gateway")
 	}
 	tx.Old, err = config.ValidateApproved(tx.Old)
@@ -222,11 +272,21 @@ func finishPolicy(path, directory, action string) (string, error) {
 	} else if tx.State == "committed" {
 		return "", fmt.Errorf("a committed transaction cannot be rolled back as a pending update")
 	}
-	if err := config.CheckSource(target); err != nil {
+	if err := checkTransactionSource(config, target); err != nil {
 		return "", err
 	}
 	if action == "commit" {
-		if err := verifyDNS(config.Proxy); err != nil {
+		if config.NativeTUN {
+			if err := native.CheckApproved(config, target); err != nil {
+				return "", err
+			}
+			if err := native.VerifyCapture(config, tx.Restricted); err != nil {
+				return "", err
+			}
+			if err := verifyDNSAt(config.NativeService, nativeDNS, []string{"www.baidu.com.", "ip.fm."}); err != nil {
+				return "", err
+			}
+		} else if err := verifyDNS(config.Proxy); err != nil {
 			return "", err
 		}
 	}
@@ -269,6 +329,11 @@ func applyTransaction(gate *Gate, target policy.Approved, shrinking bool) error 
 	if err := firewall.Apply(rules, gate.Config.RulesFile, gate.fingerprintPath()); err != nil {
 		return err
 	}
+	if gate.Config.NativeTUN && settings.TrustedTUNIfindex != 0 {
+		if err := native.InstallCapture(gate.Config, target); err != nil {
+			return err
+		}
+	}
 	if !shrinking {
 		if err := guard.UpdatePolicy(gate.Config.Pins, entries); err != nil {
 			return err
@@ -279,27 +344,45 @@ func applyTransaction(gate *Gate, target policy.Approved, shrinking bool) error 
 	return err
 }
 
+const nativeDNS = "127.2.0.17:53"
+
 func verifyDNS(proxy *policy.Proxy) error {
-	if _, err := system.Command("", "systemctl", "is-active", "--quiet", proxy.Service); err != nil {
-		return fmt.Errorf("standalone service must be running before policy commit: %w", err)
-	}
 	address := net.JoinHostPort(proxy.DNSAddress, strconv.Itoa(int(proxy.DNSPort)))
-	for _, network := range []string{"udp4", "tcp4"} {
-		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-		resolver := net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, network, address)
-			},
-		}
-		addrs, err := resolver.LookupIP(ctx, "ip4", "www.baidu.com.")
-		cancel()
-		if err != nil || len(addrs) == 0 {
-			return fmt.Errorf("standalone DNS is not ready over %s; restrictive policy remains", network)
+	return verifyDNSAt(proxy.Service, address, []string{"www.baidu.com."})
+}
+
+func verifyDNSAt(service, address string, names []string) error {
+	if _, err := system.Command("", "systemctl", "is-active", "--quiet", service); err != nil {
+		return fmt.Errorf("proxy service must be running before policy commit: %w", err)
+	}
+	for _, name := range names {
+		for _, network := range []string{"udp4", "tcp4"} {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			resolver := net.Resolver{
+				PreferGo: true,
+				Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					var dialer net.Dialer
+					return dialer.DialContext(ctx, network, address)
+				},
+			}
+			addrs, err := resolver.LookupIP(ctx, "ip4", name)
+			cancel()
+			if err != nil || len(addrs) == 0 {
+				return fmt.Errorf("proxy DNS is not ready for %s over %s", name, network)
+			}
 		}
 	}
 	return nil
+}
+
+func checkTransactionSource(config policy.Config, approved policy.Approved) error {
+	if config.NativeTUN {
+		if err := native.CheckWhitelist(config, approved); err != nil {
+			return err
+		}
+		return native.CheckSavedGeoIP(config, approved)
+	}
+	return config.CheckSource(approved)
 }
 
 func recoverPolicy(config policy.Config, path string) error {
@@ -307,8 +390,8 @@ func recoverPolicy(config policy.Config, path string) error {
 	if err != nil || !exists {
 		return err
 	}
-	if config.CheckSource(tx.Old) != nil && config.CheckSource(tx.Desired) != nil {
-		return fmt.Errorf("policy recovery cannot identify the current standalone source")
+	if checkTransactionSource(config, tx.Old) != nil && checkTransactionSource(config, tx.Desired) != nil {
+		return fmt.Errorf("policy recovery cannot identify the current source")
 	}
 	raw, err := os.ReadFile(transactionPointer(config))
 	if err != nil {
@@ -327,7 +410,7 @@ func recoverPolicy(config policy.Config, path string) error {
 		if tx.State == "committed" {
 			target = tx.Desired
 		}
-		if err := config.CheckSource(target); err != nil {
+		if err := checkTransactionSource(config, target); err != nil {
 			return err
 		}
 		if err := putJSON(config.ApprovedPolicy, target); err != nil {
@@ -347,14 +430,30 @@ func recoverPolicy(config policy.Config, path string) error {
 		return putJSON(transactionFile(directory), tx)
 	}
 	// Recover the old source before either the backend or the network is opened.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	command := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", config.Proxy.Service)
-	exit, stopped := command.Run().(*exec.ExitError)
-	if !stopped || exit.ExitCode() != 3 {
-		return fmt.Errorf("policy boot recovery requires a stopped standalone backend")
+	service := config.NativeService
+	if config.Proxy != nil {
+		service = config.Proxy.Service
 	}
-	if err := system.WriteAtomic(config.Proxy.PolicySource, append(tx.Old.SourcePolicy, '\n'), 0600); err != nil {
+	if err := requireInactive(service); err != nil {
+		return err
+	}
+	if config.NativeTUN {
+		if err := native.CheckSavedGeoIP(config, tx.Old); err != nil {
+			return err
+		}
+		current, err := native.ReadWhitelist(config)
+		if err != nil {
+			return err
+		}
+		if !native.SameWhitelist(current, tx.Old.Whitelist) {
+			if !native.SameWhitelist(current, tx.Desired.Whitelist) {
+				return fmt.Errorf("concurrent native whitelist change")
+			}
+			if err := native.ReplaceWhitelist(config, tx.Desired.Whitelist, tx.Old.Whitelist); err != nil {
+				return err
+			}
+		}
+	} else if err := system.WriteAtomic(config.Proxy.PolicySource, append(tx.Old.SourcePolicy, '\n'), 0600); err != nil {
 		return err
 	}
 	if err := putJSON(config.ApprovedPolicy, tx.Old); err != nil {
@@ -365,4 +464,15 @@ func recoverPolicy(config policy.Config, path string) error {
 		return err
 	}
 	return os.Remove(transactionPointer(config))
+}
+
+func requireInactive(service string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", service)
+	exit, stopped := command.Run().(*exec.ExitError)
+	if !stopped || exit.ExitCode() != 3 {
+		return fmt.Errorf("policy recovery requires a stopped proxy service")
+	}
+	return nil
 }

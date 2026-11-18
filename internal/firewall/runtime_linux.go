@@ -14,13 +14,17 @@ import (
 )
 
 func Apply(rules, rulesPath, fingerprintPath string) error {
+	return ApplyTable(tableName, rules, rulesPath, fingerprintPath)
+}
+
+func ApplyTable(table, rules, rulesPath, fingerprintPath string) error {
 	if _, err := system.Command(rules, "nft", "--check", "-f", "-"); err != nil {
 		return err
 	}
 	if _, err := system.Command(rules, "nft", "-f", "-"); err != nil {
 		return err
 	}
-	fingerprint, err := currentFingerprint()
+	fingerprint, err := currentFingerprint(table)
 	if err != nil {
 		return err
 	}
@@ -33,11 +37,15 @@ func Apply(rules, rulesPath, fingerprintPath string) error {
 }
 
 func Verify(rules, fingerprintPath string) error {
+	return VerifyTable(tableName, rules, fingerprintPath)
+}
+
+func VerifyTable(table, rules, fingerprintPath string) error {
 	want, err := os.ReadFile(fingerprintPath)
 	if err != nil {
 		return err
 	}
-	got, err := currentFingerprint()
+	got, err := currentFingerprint(table)
 	if err != nil {
 		return err
 	}
@@ -52,8 +60,8 @@ func digestRules(rules string) string {
 	return hex.EncodeToString(digest[:])
 }
 
-func currentFingerprint() (string, error) {
-	data, err := system.Command("", "nft", "-s", "-j", "list", "table", "inet", tableName)
+func currentFingerprint(table string) (string, error) {
+	data, err := system.Command("", "nft", "-s", "-j", "list", "table", "inet", table)
 	if err != nil {
 		return "", err
 	}

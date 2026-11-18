@@ -4,6 +4,7 @@
 #include <linux/ip.h>
 #include <linux/ipv6.h>
 #include <linux/in.h>
+#include <linux/udp.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
 #include "guard.h"
@@ -62,9 +63,20 @@ static __always_inline int diagnostic_echo4(struct __sk_buff *skb, __u32 offset,
     return icmp[0] == expected_type && icmp[1] == 0;
 }
 
+static __always_inline int dhcp_request(struct __sk_buff *skb, __u32 offset,
+                                         const struct iphdr *ip)
+{
+    struct udphdr udp;
+    if (skb->ingress_ifindex || ip->protocol != IPPROTO_UDP ||
+        (bpf_ntohs(ip->frag_off) & 0x3fff) ||
+        bpf_ntohs(ip->tot_len) < ip->ihl * 4 + sizeof(udp) ||
+        bpf_skb_load_bytes(skb, offset + ip->ihl * 4, &udp, sizeof(udp)))
+        return 0;
+    return udp.source == bpf_htons(68) && udp.dest == bpf_htons(67);
+}
+
 // TCX_NEXT (-1) continues to the normal device path; DROP is terminal.
-SEC("tcx/egress")
-int gateway_egress(struct __sk_buff *skb)
+static __always_inline int enforce_egress(struct __sk_buff *skb, int routed_wan)
 {
     __u16 protocol;
     __u32 offset = ETH_HLEN, zero = 0;
@@ -99,6 +111,18 @@ int gateway_egress(struct __sk_buff *skb)
             return verdict(DENY_PARSE, 2);
         __u32 destination = flags(policy, 4, &ip.daddr);
         __u32 source = flags(policy, 4, &ip.saddr);
+        if (routed_wan) {
+            // WAN TCX sees masqueraded source addresses. The ingress LAN
+            // source is checked before SNAT by the independent nft guard.
+            if (ip.daddr == bpf_htonl(0xffffffff))
+                return dhcp_request(skb, offset, &ip) ?
+                    verdict(ALLOW_DIRECT, -1) : verdict(DENY_DESTINATION, 2);
+            if (config->trusted_tun_ifindex &&
+                skb->ingress_ifindex == config->trusted_tun_ifindex)
+                return verdict(DENY_RETURN, 2);
+            return destination & DIRECT ?
+                verdict(ALLOW_DIRECT, -1) : verdict(DENY_DESTINATION, 2);
+        }
         if (destination & LAN) {
             // Local transparent replies can have the remote server's source IP.
             if (!skb->ingress_ifindex || (source & DIRECT) ||
@@ -158,6 +182,8 @@ int gateway_egress(struct __sk_buff *skb)
             !bpf_skb_load_bytes(skb, offset + sizeof(ip) + 8, mld, sizeof(mld)) && !mld[1] &&
             (mld[0] == 130 || mld[0] == 131 || mld[0] == 132 || mld[0] == 143))
             return verdict(ALLOW_NDP, -1);
+        if (routed_wan)
+            return verdict(DENY_IPV6, 2);
         __u32 destination = flags(policy, 6, &ip.daddr);
         __u32 source = flags(policy, 6, &ip.saddr);
         if (!config->public_ipv6 &&
@@ -175,4 +201,16 @@ int gateway_egress(struct __sk_buff *skb)
     }
     return verdict(DENY_PARSE, 2);
 }
+SEC("tcx/egress")
+int gateway_egress(struct __sk_buff *skb)
+{
+    return enforce_egress(skb, 0);
+}
+
+SEC("tcx/egress")
+int wan_egress(struct __sk_buff *skb)
+{
+    return enforce_egress(skb, 1);
+}
+
 char LICENSE[] SEC("license") = "GPL";
