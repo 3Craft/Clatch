@@ -45,9 +45,6 @@ func open(path string) (*Gate, error) {
 	if err != nil {
 		return nil, err
 	}
-	if config.Proxy == nil && !config.NativeTUN {
-		return nil, fmt.Errorf("guard requires a standalone backend or native v2rayA TUN")
-	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(config.ApprovedPolicy), "pending-transaction.json")); err == nil {
 		return nil, fmt.Errorf("recover pending policy transaction before starting")
 	} else if !errors.Is(err, os.ErrNotExist) {

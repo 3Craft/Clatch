@@ -15,6 +15,7 @@ import (
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
 	"clatch-gateway/internal/native"
+	"clatch-gateway/internal/policy"
 	"clatch-gateway/internal/system"
 )
 
@@ -31,40 +32,66 @@ type nativeJournal struct {
 }
 
 func NativeBind(path string, bind bool) (map[string]any, error) {
-	return nativeLifecycle(path, "", bind, false)
+	return nativeLifecycle(path, "", "", bind, false, false)
 }
 
-func NativeHook(path, confdir, stage string) (map[string]any, error) {
+func NativeHook(path, confdir, stage, mode string, check bool) (map[string]any, error) {
 	switch stage {
 	case "post-start":
-		return nativeLifecycle(path, confdir, true, true)
+		return nativeLifecycle(path, confdir, mode, true, true, check)
 	case "pre-start", "pre-stop", "post-stop":
-		return nativeLifecycle(path, confdir, false, true)
+		return nativeLifecycle(path, confdir, mode, false, true, check)
 	default:
 		return nil, fmt.Errorf("invalid native lifecycle stage")
 	}
 }
 
-func nativeLifecycle(path, confdir string, bind, hook bool) (map[string]any, error) {
-
+func nativeLifecycle(path, confdir, mode string, bind, hook, check bool) (map[string]any, error) {
 	var result map[string]any
 	err := WithLock(func() error {
 		gate, err := open(path)
 		if err != nil {
 			return err
 		}
-		if !gate.Config.NativeTUN {
-			return fmt.Errorf("native lifecycle requires v2rayA native TUN configuration")
+		if !gate.Config.IsNative() || !hook && !gate.Config.NativeTUN {
+			return fmt.Errorf("configuration does not support the requested native operation")
 		}
 		if confdir != "" && gate.Config.NativeConfDir != confdir {
 			return fmt.Errorf("hook configuration directory differs from the approved profile")
+		}
+		if bind && mode != "" && (mode != "tun" && mode != "tproxy" || gate.Config.NativeTUN != (mode == "tun")) {
+			return fmt.Errorf("hook interception mode differs from the approved profile")
+		}
+		if check {
+			port, err := native.ConfigureDNS(gate.Config, bind, true)
+			result = map[string]any{"checked": true, "dns_port": port}
+			return err
+		}
+		if !gate.Config.NativeTUN {
+			if bind {
+				approved, err := nativeHookApproval(gate)
+				if err != nil {
+					return err
+				}
+				if err := native.VerifyCapture(gate.Config, approved); err != nil {
+					return err
+				}
+				if result, err = gate.Verify(); err != nil {
+					return err
+				}
+			} else {
+				result = make(map[string]any)
+			}
+			port, err := native.ConfigureDNS(gate.Config, bind, false)
+			result["dns_port"] = port
+			return err
 		}
 		if err := gate.recoverNative(); err != nil {
 			return err
 		}
 		var candidate native.Snapshot
 		if bind {
-			if err := validateNativeHookSource(gate); err != nil {
+			if _, err := nativeHookApproval(gate); err != nil {
 				return err
 			}
 			candidate, err = native.Inspect(gate.Config)
@@ -326,25 +353,26 @@ func (g *Gate) collectNative(previous string) error {
 	return putJSON(path, record)
 }
 
-func validateNativeHookSource(gate *Gate) error {
+func nativeHookApproval(gate *Gate) (policy.Approved, error) {
 	tx, exists, err := savedTransaction(gate.Config, gate.Path)
 	if err != nil {
-		return err
+		return policy.Approved{}, err
 	}
 	if !exists {
-		return native.CheckApproved(gate.Config, gate.Approved)
+		return gate.Approved, native.CheckApproved(gate.Config, gate.Approved)
 	}
 	boot, err := bootID()
 	if err != nil {
-		return err
+		return policy.Approved{}, err
 	}
 	if tx.BootID != boot || tx.State != "staged" ||
 		gate.Approved.NetworkSHA256 != tx.Restricted.NetworkSHA256 {
-		return fmt.Errorf("recover native policy transaction before starting the core")
+		return policy.Approved{}, fmt.Errorf("recover native policy transaction before starting the core")
 	}
-	if native.CheckApproved(gate.Config, tx.Desired) != nil &&
-		native.CheckApproved(gate.Config, tx.Old) != nil {
-		return fmt.Errorf("native settings match neither side of the approved policy transaction")
+	for _, approved := range []policy.Approved{tx.Desired, tx.Old} {
+		if err := native.CheckApproved(gate.Config, approved); err == nil {
+			return approved, nil
+		}
 	}
-	return nil
+	return policy.Approved{}, fmt.Errorf("native settings match neither side of the approved policy transaction")
 }

@@ -46,6 +46,7 @@ type installProfile struct {
 	LAN         []string           `json:"lan"`
 	PublicIPv6  bool               `json:"public_ipv6"`
 	Proxy       *policy.Proxy      `json:"proxy"`
+	NativeMode  string             `json:"native_mode"`
 	GeoIP       string             `json:"geoip"`
 	Diagnostic  *policy.Diagnostic `json:"lan_icmp_diagnostic"`
 }
@@ -134,9 +135,21 @@ func makeInstallPlan(path string, test bool) (installPlan, error) {
 	}
 	address := netip.MustParsePrefix(p.Profile.Address)
 	p.NewAccount = create
-	p.Config = policy.Config{Interface: p.Profile.Interface, DiagnosticUID: uid, NativeTUN: p.Profile.Proxy == nil,
+	p.Config = policy.Config{Interface: p.Profile.Interface, DiagnosticUID: uid,
 		Pins: defaultPins, ApprovedPolicy: defaultPolicy, RulesFile: defaultRules, LAN: p.Profile.LAN,
 		Local: []string{address.Addr().String() + "/32"}, Proxy: p.Profile.Proxy, Diagnostic: p.Profile.Diagnostic}
+	if p.Config.IsNative() {
+		mode, err := native.Mode("/etc/v2raya")
+		if err != nil {
+			return p, err
+		}
+		if p.Profile.NativeMode != "" && p.Profile.NativeMode != mode {
+			return p, fmt.Errorf("native mode differs from the v2rayA database")
+		}
+		p.Config.NativeTUN = mode == "tun"
+	} else if p.Profile.NativeMode != "" {
+		return p, fmt.Errorf("native_mode is only available for a v2rayA profile")
+	}
 	if err := p.Config.Validate(); err != nil {
 		return p, err
 	}
@@ -168,8 +181,8 @@ func makeInstallPlan(path string, test bool) (installPlan, error) {
 	if err := firewall.RequireUnusedGuardTable(); err != nil {
 		return p, err
 	}
-	if p.Config.NativeTUN {
-		p.Approval, err = native.PrepareTUNApproval(p.Config, p.Profile.GeoIP, p.ProxyActive)
+	if p.Config.IsNative() {
+		p.Approval, err = native.PrepareApproval(p.Config, p.Profile.GeoIP, p.ProxyActive)
 	} else {
 		if p.Profile.GeoIP != "" {
 			return p, fmt.Errorf("standalone profiles use a CIDR policy file")

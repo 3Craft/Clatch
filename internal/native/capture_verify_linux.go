@@ -78,10 +78,14 @@ func decodeInterval(raw json.RawMessage, bits int) (interval, error) {
 }
 
 func VerifyCapture(config policy.Config, approved policy.Approved) error {
-	if !config.NativeTUN {
-		return fmt.Errorf("configuration does not use native v2rayA TUN")
+	if !config.IsNative() {
+		return fmt.Errorf("configuration does not use native v2rayA")
 	}
-	data, err := system.Command("", "nft", "--json", "list", "table", "inet", captureTable)
+	table, ipv4, ipv6 := proxyTable, "whitelist", "whitelist6"
+	if config.NativeTUN {
+		table, ipv4, ipv6 = captureTable, "direct4", "direct6"
+	}
+	data, err := system.Command("", "nft", "--json", "list", "table", "inet", table)
 	if err != nil {
 		return err
 	}
@@ -97,9 +101,9 @@ func VerifyCapture(config policy.Config, approved policy.Approved) error {
 		return err
 	}
 	for _, bits := range []int{32, 128} {
-		name := "direct4"
+		name := ipv4
 		if bits == 128 {
-			name = "direct6"
+			name = ipv6
 		}
 		var want, got []interval
 		found := false

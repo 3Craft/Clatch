@@ -91,7 +91,7 @@ func stagePolicy(path, directory, input, geoIP string) (string, error) {
 }
 
 func approvalFromSource(config policy.Config, input, geoIP string) (policy.Approved, error) {
-	if config.NativeTUN {
+	if config.IsNative() {
 		var raw json.RawMessage
 		var err error
 		if input == "" {
@@ -130,7 +130,7 @@ func stageApproval(gate *Gate, directory string, next policy.Approved) (string, 
 	if _, err := gate.Verify(); err != nil {
 		return "", err
 	}
-	if gate.Config.NativeTUN {
+	if gate.Config.IsNative() {
 		if err := native.CheckWhitelist(gate.Config, gate.Approved); err != nil {
 			return "", err
 		}
@@ -199,7 +199,7 @@ func savedTransaction(config policy.Config, path string) (policyTransaction, boo
 	if err != nil {
 		return tx, false, err
 	}
-	if tx.Schema != 1 || tx.Config != canonical || config.Proxy == nil && !config.NativeTUN {
+	if tx.Schema != 1 || tx.Config != canonical {
 		return tx, false, fmt.Errorf("policy transaction belongs to another gateway")
 	}
 	tx.Old, err = config.ValidateApproved(tx.Old)
@@ -279,11 +279,15 @@ func finishPolicy(path, directory, action string) (string, error) {
 		return "", err
 	}
 	if action == "commit" {
-		if config.NativeTUN {
+		if config.IsNative() {
 			if err := native.CheckApproved(config, target); err != nil {
 				return "", err
 			}
-			if err := native.VerifyCapture(config, tx.Restricted); err != nil {
+			capture := target
+			if config.NativeTUN {
+				capture = tx.Restricted
+			}
+			if err := native.VerifyCapture(config, capture); err != nil {
 				return "", err
 			}
 			if err := verifyDNSAt(config.NativeService, nativeDNS, []string{"www.baidu.com.", "ip.fm."}); err != nil {
@@ -350,11 +354,8 @@ func applyTransaction(gate *Gate, target policy.Approved, shrinking bool) error 
 const nativeDNS = "127.2.0.17:53"
 
 func CheckBackendDNS(config policy.Config) error {
-	if config.NativeTUN {
+	if config.IsNative() {
 		return verifyDNSAt(config.NativeService, nativeDNS, []string{"www.baidu.com.", "ip.fm."})
-	}
-	if config.Proxy == nil {
-		return fmt.Errorf("configured backend is required for DNS readiness")
 	}
 	return verifyDNS(config.Proxy)
 }
@@ -383,7 +384,7 @@ func verifyDNSAt(service, address string, names []string) error {
 }
 
 func checkTransactionSource(config policy.Config, approved policy.Approved) error {
-	if config.NativeTUN {
+	if config.IsNative() {
 		if err := native.CheckWhitelist(config, approved); err != nil {
 			return err
 		}
@@ -444,7 +445,7 @@ func recoverPolicy(config policy.Config, path string) error {
 	if err := requireInactive(service); err != nil {
 		return err
 	}
-	if config.NativeTUN {
+	if config.IsNative() {
 		if err := native.CheckSavedGeoIP(config, tx.Old); err != nil {
 			return err
 		}

@@ -98,7 +98,7 @@ WantedBy=sysinit.target
 		return err
 	}
 	p.Changes = append(p.Changes, change{interfacesPath, interfaces, fileState{Exists: true, Mode: interfaces.Mode, Data: []byte(updated)}})
-	if p.Config.NativeTUN {
+	if p.Config.IsNative() {
 		return p.nativeFiles()
 	}
 	return nil

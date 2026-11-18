@@ -50,9 +50,36 @@ type nativeSetting struct {
 	DNSHijack string `json:"dnsHijack"`
 }
 
-func PrepareTUNApproval(config policy.Config, geoIP string, running bool) (policy.Approved, error) {
-	if _, err := validateSettings(config.NativeConfDir); err != nil {
+func Mode(confdir string) (string, error) {
+	var setting nativeSetting
+	if err := readSetting(confdir, settingsKey, &setting); err != nil {
+		return "", err
+	}
+	if setting.PAC != "whitelist" || setting.Type != "tun" && setting.Type != "tproxy" {
+		return "", fmt.Errorf("native v2rayA requires TUN or TPROXY whitelist mode")
+	}
+	return setting.Type, nil
+}
+
+func CheckMode(config policy.Config) error {
+	mode, err := Mode(config.NativeConfDir)
+	if err != nil {
+		return err
+	}
+	if config.NativeTUN != (mode == "tun") {
+		return fmt.Errorf("native v2rayA mode differs from the installed gateway")
+	}
+	return nil
+}
+
+func PrepareApproval(config policy.Config, geoIP string, running bool) (policy.Approved, error) {
+	if err := CheckMode(config); err != nil {
 		return policy.Approved{}, err
+	}
+	if config.NativeTUN {
+		if _, err := validateSettings(config.NativeConfDir); err != nil {
+			return policy.Approved{}, err
+		}
 	}
 	whitelist, err := ReadWhitelist(config)
 	if err != nil {

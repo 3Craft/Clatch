@@ -17,6 +17,8 @@ import (
 const (
 	captureTable = "jdn_v2raya_tun"
 	dnsTable     = "jdn_v2raya_lan_dns"
+	proxyTable   = "v2raya"
+	dnsBypass    = "jdn-v2raya-lan-dns-bypass"
 )
 
 func InstallCapture(config policy.Config, approved policy.Approved) error {
@@ -56,6 +58,98 @@ func applyCapture(rules string) error {
 	}
 	_, err := system.Command(rules, "nft", "-f", "-")
 	return err
+}
+
+// ConfigureDNS updates only the native manager's managed DNS bypass and the
+// Clatch-owned redirect table. The manager keeps ownership of its other rules.
+func ConfigureDNS(config policy.Config, enable, check bool) (uint16, error) {
+	var port uint16
+	if enable {
+		var err error
+		port, err = dnsModulePort(config.NativeConfDir)
+		if err != nil {
+			return 0, err
+		}
+	}
+	var rules strings.Builder
+	if !config.NativeTUN {
+		handles, err := dnsBypassHandles(port != 0)
+		if err != nil {
+			return 0, err
+		}
+		for _, handle := range handles {
+			fmt.Fprintf(&rules, "delete rule inet %s prerouting handle %d\n", proxyTable, handle)
+		}
+		if port != 0 {
+			fmt.Fprintf(&rules, `insert rule inet %s prerouting meta nfproto ipv4 iifname != "lo" fib daddr type local meta l4proto { tcp, udp } th dport 53 return comment %q`+"\n", proxyTable, dnsBypass)
+		}
+	}
+	fmt.Fprintf(&rules, "add table inet %[1]s\ndelete table inet %[1]s\n", dnsTable)
+	rules.WriteString(renderDNSRedirect(port))
+	if _, err := system.Command(rules.String(), "nft", "--check", "-f", "-"); err != nil {
+		return 0, err
+	}
+	if !check {
+		if _, err := system.Command(rules.String(), "nft", "-f", "-"); err != nil {
+			return 0, err
+		}
+	}
+	return port, nil
+}
+
+func dnsBypassHandles(required bool) ([]uint64, error) {
+	data, err := system.Command("", "nft", "--json", "list", "tables")
+	if err != nil {
+		return nil, err
+	}
+	var tables struct {
+		Objects []struct {
+			Table struct {
+				Family string `json:"family"`
+				Name   string `json:"name"`
+			} `json:"table"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(data, &tables); err != nil {
+		return nil, err
+	}
+	for _, item := range tables.Objects {
+		if item.Table.Family == "inet" && item.Table.Name == proxyTable {
+			return listDNSBypassHandles()
+		}
+	}
+	if required {
+		return nil, fmt.Errorf("v2rayA did not create its TPROXY table")
+	}
+	return nil, nil
+}
+
+func listDNSBypassHandles() ([]uint64, error) {
+	data, err := system.Command("", "nft", "--json", "--handle", "list", "chain", "inet", proxyTable, "prerouting")
+	if err != nil {
+		return nil, err
+	}
+	var chain struct {
+		Objects []struct {
+			Rule struct {
+				Handle  uint64 `json:"handle"`
+				Comment string `json:"comment"`
+			} `json:"rule"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(data, &chain); err != nil {
+		return nil, err
+	}
+	var handles []uint64
+	for _, item := range chain.Objects {
+		if item.Rule.Comment == dnsBypass {
+			if item.Rule.Handle == 0 {
+				return nil, fmt.Errorf("managed DNS bypass has no nft rule handle")
+			}
+			handles = append(handles, item.Rule.Handle)
+		}
+	}
+	return handles, nil
 }
 
 func dnsModulePort(confdir string) (uint16, error) {
@@ -120,8 +214,15 @@ table inet %[1]s {
 add table inet %[7]s
 delete table inet %[7]s
 `, captureTable, direct4, direct6, config.Interface, diagnostic, local, dnsTable)
-	if port != 0 {
-		fmt.Fprintf(&output, `table inet %[1]s {
+	output.WriteString(renderDNSRedirect(port))
+	return output.String()
+}
+
+func renderDNSRedirect(port uint16) string {
+	if port == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`table inet %[1]s {
  chain prerouting {
   type nat hook prerouting priority dstnat - 1; policy accept;
   iifname "lo" return
@@ -130,6 +231,4 @@ delete table inet %[7]s
  }
 }
 `, dnsTable, port)
-	}
-	return output.String()
 }

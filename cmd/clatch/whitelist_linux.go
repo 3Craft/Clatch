@@ -21,6 +21,9 @@ func runWhitelist(args []string) (any, error) {
 	flags.StringVar(&req.Config, "config", "/etc/jdn-gateway/config.json", "gateway config")
 	flags.StringVar(&req.Backups, "backups", "/root/backups/gateway", "private backup root")
 	flags.StringVar(&req.GeoIP, "geoip", "", "explicit GeoIP path")
+	flags.StringVar(&req.ConfDir, "confdir", "", "v2rayA configuration directory")
+	flags.StringVar(&req.Service, "service", "", "v2rayA service name")
+	flags.StringVar(&req.DNS, "dns-server", "", "IPv4 DNS endpoint for the whitelist readiness check")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}

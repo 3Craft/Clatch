@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"clatch-gateway/internal/native"
@@ -23,6 +25,9 @@ type WhitelistRequest struct {
 	Backup  string
 	Backups string
 	GeoIP   string
+	ConfDir string
+	Service string
+	DNS     string
 	Inputs  []string
 	Replace bool
 	Apply   bool
@@ -43,8 +48,11 @@ func Whitelist(request WhitelistRequest) (map[string]any, error) {
 		if err != nil {
 			return err
 		}
-		if !config.NativeTUN {
-			return fmt.Errorf("native whitelist requires v2rayA native TUN")
+		if !config.IsNative() {
+			return fmt.Errorf("native whitelist requires v2rayA")
+		}
+		if err := checkWhitelistOptions(config, &request); err != nil {
+			return err
 		}
 		if request.Action == "recover" {
 			if !filepath.IsAbs(request.Backup) || filepath.Clean(request.Backup) != request.Backup {
@@ -53,10 +61,32 @@ func Whitelist(request WhitelistRequest) (map[string]any, error) {
 			result = map[string]any{"recovered": request.Backup}
 			return recoverWhitelist(config, request.Config, request.Backup)
 		}
+		if err := native.CheckMode(config); err != nil {
+			return err
+		}
 		result, err = previewWhitelist(config, request)
 		return err
 	})
 	return result, err
+}
+
+func checkWhitelistOptions(config policy.Config, request *WhitelistRequest) error {
+	if request.ConfDir != "" && filepath.Clean(request.ConfDir) != config.NativeConfDir {
+		return fmt.Errorf("whitelist configuration directory differs from the approved gateway")
+	}
+	if request.Service != "" && strings.TrimSuffix(request.Service, ".service") != strings.TrimSuffix(config.NativeService, ".service") {
+		return fmt.Errorf("whitelist service differs from the approved gateway")
+	}
+	if request.DNS == "" {
+		request.DNS = nativeDNS
+		return nil
+	}
+	address, err := netip.ParseAddr(request.DNS)
+	if err != nil || !address.Is4() {
+		return fmt.Errorf("whitelist DNS server must be an IPv4 address")
+	}
+	request.DNS = netip.AddrPortFrom(address, 53).String()
+	return nil
 }
 
 func previewWhitelist(config policy.Config, request WhitelistRequest) (map[string]any, error) {
@@ -121,7 +151,7 @@ func previewWhitelist(config policy.Config, request WhitelistRequest) (map[strin
 }
 
 func applyWhitelist(config policy.Config, request WhitelistRequest, current, next policy.Approved) (string, error) {
-	if err := verifyDNSAt(config.NativeService, nativeDNS, []string{"www.baidu.com.", "ip.fm."}); err != nil {
+	if err := verifyDNSAt(config.NativeService, request.DNS, []string{"www.baidu.com.", "ip.fm."}); err != nil {
 		return "", err
 	}
 	if !filepath.IsAbs(request.Backups) || filepath.Clean(request.Backups) != request.Backups {
@@ -158,7 +188,7 @@ func applyWhitelist(config policy.Config, request WhitelistRequest, current, nex
 		err = restartWithWhitelist(config, current.Whitelist, next.Whitelist)
 	}
 	if err == nil {
-		err = finishNativeUpdate(request.Config, dir)
+		err = finishNativeUpdate(request.Config, dir, request.DNS)
 	}
 	if err != nil {
 		recovery := recoverWhitelist(config, request.Config, backup)
@@ -235,7 +265,7 @@ func restartWithWhitelist(config policy.Config, before, next json.RawMessage) er
 	return err
 }
 
-func finishNativeUpdate(config, dir string) error {
+func finishNativeUpdate(config, dir, dns string) error {
 	deadline := time.Now().Add(50 * time.Second)
 	var last error
 	for time.Now().Before(deadline) {
@@ -251,11 +281,10 @@ func finishNativeUpdate(config, dir string) error {
 			if !found || tx.State != "staged" {
 				return fmt.Errorf("native policy stage is missing")
 			}
-			if err := native.VerifyCapture(gate.Config, tx.Restricted); err != nil {
-				return err
-			}
-			if _, err := native.Identity(gate.Config); err != nil {
-				return err
+			if dns != nativeDNS {
+				if err := verifyDNSAt(gate.Config.NativeService, dns, []string{"www.baidu.com.", "ip.fm."}); err != nil {
+					return err
+				}
 			}
 			_, err = finishPolicy(config, dir, "commit")
 			return err

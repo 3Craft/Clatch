@@ -41,9 +41,9 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
 - Manage IPv4 TPROXY interception for standalone mihomo, Xray and V2Fly.
   Managed mihomo TUN uses a persistent root-owned device. Each interception
   mode owns its nftables table and reserved routing state.
-- Validate v2rayA's live ephemeral TUN identity and approved GeoIP/whitelist
-  data. Manage native TUN return authorization and the LAN DNS redirect
-  through the v2rayA transparent proxy lifecycle hook.
+- Verify v2rayA's native TPROXY or TUN capture against the approved
+  GeoIP/whitelist data. The transparent proxy lifecycle hook manages the
+  LAN DNS redirect and authorizes the live TUN device in TUN mode.
 - Stage policy updates through the intersection of old and new CIDRs. Require
   a matching source and DNS readiness before committing. The v2rayA whitelist
   command previews edits, backs up SQLite and supports recovery and restore.
@@ -63,8 +63,9 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
 
 Prepare the static IPv4 ifupdown interface and the proxy service first. Set
 the proxy configuration and CIDR source in
-`deploy/debian/standalone.example.json`. A profile without `proxy` uses a
-preconfigured v2rayA native TUN and its SQLite and GeoIP data. The installer
+`deploy/debian/standalone.example.json`. A profile without `proxy` reads the
+prepared v2rayA mode and whitelist from its SQLite and GeoIP data. Set
+`native_mode` to `tproxy` or `tun` to require a specific mode. The installer
 uses the existing proxy credentials and service enablement.
 
 ```sh

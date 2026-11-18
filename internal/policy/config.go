@@ -202,6 +202,10 @@ func (c Config) IsTUN() bool {
 	return c.NativeTUN || c.Proxy != nil && c.Proxy.Mode == "tun"
 }
 
+func (c Config) IsNative() bool {
+	return c.Proxy == nil
+}
+
 func (c Config) TUNDevice() string {
 	if c.NativeTUN {
 		return "tun0"

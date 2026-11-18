@@ -112,14 +112,21 @@ func Approval(config policy.Config, raw json.RawMessage, path string) (policy.Ap
 	if err != nil {
 		return policy.Approved{}, err
 	}
+	mode := ""
+	if config.NativeTUN {
+		mode = "tun"
+	}
 	return config.ValidateApproved(policy.Approved{
-		Schema: 1, Created: time.Now().Format(time.RFC3339Nano), NativeMode: "tun",
+		Schema: 1, Created: time.Now().Format(time.RFC3339Nano), NativeMode: mode,
 		Networks: policy.Strings(prefixes), NetworkSHA256: policy.Digest(prefixes),
 		Whitelist: raw, GeoIP: path, GeoIPSHA256: fmt.Sprintf("%x", sha256.Sum256(file)),
 	})
 }
 
 func CheckApproved(config policy.Config, approved policy.Approved) error {
+	if err := CheckMode(config); err != nil {
+		return err
+	}
 	if err := CheckWhitelist(config, approved); err != nil {
 		return err
 	}

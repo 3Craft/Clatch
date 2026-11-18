@@ -134,8 +134,8 @@ func installChanges(p plan, m manifest) (map[string]any, error) {
 		return nil, fmt.Errorf("policy changed during migration")
 	}
 	switch {
-	case p.Config.NativeTUN:
-		_, err = gateway.NativeHook(configPath, p.Config.NativeConfDir, "post-start")
+	case p.Config.IsNative():
+		_, err = gateway.NativeHook(configPath, p.Config.NativeConfDir, "post-start", "", false)
 	case p.Config.IsTUN():
 		_, err = capture.StartManagedTUN(configPath)
 	default:

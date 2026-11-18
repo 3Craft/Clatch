@@ -149,7 +149,7 @@ func runBPF(args []string) (any, error) {
 			if args[0] == "verify-wan" {
 				return guard.VerifyWAN(args[1], args[2])
 			}
-			return guard.Verify(args[1], args[2])
+			return guard.VerifyStandalone(args[1], args[2])
 		}
 	case "policy":
 		if len(args) == 3 {

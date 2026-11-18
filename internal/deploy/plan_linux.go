@@ -82,9 +82,6 @@ func buildPlan() (plan, error) {
 	if err != nil {
 		return p, err
 	}
-	if !config.NativeTUN && config.Proxy == nil {
-		return p, fmt.Errorf("installed interception mode has no migration adapter")
-	}
 	for _, name := range []string{"clatch-deployment.json", "clatch-policy-pending.json",
 		"pending-transaction.json", "pending-native-tun-generation.json"} {
 		path := filepath.Join(filepath.Dir(config.ApprovedPolicy), name)
@@ -125,7 +122,7 @@ func buildPlan() (plan, error) {
 			return p, err
 		}
 	}
-	if config.NativeTUN {
+	if config.IsNative() {
 		p.Service = strings.TrimSuffix(config.NativeService, ".service") + ".service"
 		if err := native.CheckApproved(config, approved); err != nil {
 			return p, err
@@ -178,7 +175,7 @@ func buildPlan() (plan, error) {
 			return p, err
 		}
 	}
-	if config.NativeTUN {
+	if config.IsNative() {
 		if err := p.add(hookPath, wrapper("native hook"), 0755, true); err != nil {
 			return p, err
 		}

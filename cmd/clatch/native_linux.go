@@ -4,7 +4,6 @@ package main
 
 import (
 	"flag"
-	"fmt"
 
 	"clatch-gateway/internal/gateway"
 	"clatch-gateway/internal/native"
@@ -37,14 +36,15 @@ func runNative(args []string) (any, error) {
 func runNativeHook(args []string) (any, error) {
 	flags := flag.NewFlagSet("native hook", flag.ContinueOnError)
 	stage := flags.String("stage", "", "v2rayA transparent proxy lifecycle stage")
-	kind := flags.String("transparent-type", "tun", "transparent proxy mode")
+	kind := flags.String("transparent-type", "", "transparent proxy mode")
+	check := flags.Bool("check", false, "validate the DNS rules without changing them")
 	confdir := flags.String("v2raya-confdir", "", "v2rayA configuration directory")
 	config := flags.String("config", "/etc/jdn-gateway/config.json", "approved guard configuration")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}
-	if flags.NArg() != 0 || *kind != "tun" && *stage == "post-start" {
-		return nil, fmt.Errorf("native TUN hook received an unsupported invocation")
+	if flags.NArg() != 0 {
+		return nil, errUsage
 	}
-	return gateway.NativeHook(*config, *confdir, *stage)
+	return gateway.NativeHook(*config, *confdir, *stage, *kind, *check)
 }
