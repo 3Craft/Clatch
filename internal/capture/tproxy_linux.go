@@ -32,6 +32,11 @@ var tproxy = mode{
 	statePath: "/run/jdn-v2ray-tproxy.json", local: true,
 }
 
+var routedTPROXY = mode{
+	table: "clatch_openwrt_tproxy", priority: tproxy.priority, routeDevice: "lo",
+	statePath: "/var/run/clatch-openwrt-tproxy.json", local: true,
+}
+
 type state struct {
 	Config    string `json:"config"`
 	Port      uint16 `json:"port,omitempty"`
@@ -76,6 +81,22 @@ func StartTPROXY(configPath string, port uint16) (state, error) {
 
 func StopTPROXY() error {
 	return stopMode(tproxy)
+}
+
+func StartRoutedTPROXY(configPath string, port uint16, lanDevices, lan4, direct4 string) error {
+	path, err := resolve(configPath)
+	if err != nil {
+		return err
+	}
+	owner := state{Config: path, Port: port}
+	rules := renderRoutedTPROXY(lanDevices, lan4, direct4, port)
+	return gateway.WithLock(func() error {
+		return routedTPROXY.start(owner, rules, managedTUN)
+	})
+}
+
+func StopRoutedTPROXY() error {
+	return stopMode(routedTPROXY)
 }
 
 func resolve(path string) (string, error) {
@@ -373,4 +394,25 @@ table inet %[1]s {
  }
 }
 `, tproxy.table, direct, port)
+}
+
+func renderRoutedTPROXY(lanDevices, lan4, direct4 string, port uint16) string {
+	return fmt.Sprintf(`add table inet %[1]s
+delete table inet %[1]s
+table inet %[1]s {
+ set lan { type ifname; elements = { %[2]s }; }
+ set lan4 { type ipv4_addr; flags interval; elements = { %[3]s }; }
+ set direct4 { type ipv4_addr; flags interval; elements = { %[4]s }; }
+ chain prerouting {
+  type filter hook prerouting priority mangle; policy accept;
+  meta nfproto != ipv4 return
+  iifname != @lan return
+  ip saddr != @lan4 return
+  fib daddr type local return
+  ip daddr @lan4 return
+  ip daddr @direct4 return
+  meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:%[5]d meta mark set (meta mark & 0xffffff3f) | 0x40 counter accept
+ }
+}
+`, routedTPROXY.table, lanDevices, lan4, direct4, port)
 }

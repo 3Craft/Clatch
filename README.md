@@ -77,9 +77,9 @@ to restore the previous entry points, including after confirmation.
 
 The routed WAN profile uses netifd, firewall4, `ip-full` and `tc-tiny`. The
 kernel must support pinned TCX egress links. The profile is intentionally
-IPv4-only. Any proxy runs as a separate service and its endpoint needs an
-explicit entry in the direct policy. Set `proxy_device` only for a TUN device
-you control and configure the proxy's capture and DNS separately.
+IPv4-only. Run the proxy as a separate service and add each proxy endpoint
+to the direct policy. Set `proxy_device` only for a TUN device you control
+and configure its capture and DNS separately.
 
 Configure the logical uplink and its physical Ethernet device in
 `deploy/openwrt/openwrt.example.json`. Use the example policy format for your
@@ -103,6 +103,19 @@ guarded uplinks. Check each uplink after bringing network and firewall up.
 ```sh
 clatch openwrt verify /etc/clatch/openwrt.json wan eth1
 ```
+
+For LAN TCP and UDP capture, install `kmod-nft-tproxy` and configure a
+transparent listener on `127.0.0.1`. Start capture after the uplink gates
+verify. The direct policy and LAN-local traffic bypass the listener.
+
+```sh
+clatch openwrt tproxy-start /etc/clatch/openwrt.json 12345
+clatch openwrt tproxy-stop
+```
+
+Use these commands in the proxy's service lifecycle to restore capture
+after boot. Stop removes the interception rules and leaves WAN enforcement
+active.
 
 The [verification report](docs/verification.md) records the tested backends,
 hardware targets and failure cases.

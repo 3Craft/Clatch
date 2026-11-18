@@ -23,7 +23,8 @@ and backup integrity. Linux builds and static analysis cover both architectures.
 | OpenWrt 25.12.6 x86/64 and armsr/armv8 virtual machines | Embedded TCX load, inspect, map/counter reads and detach on loopback | Both smoke tests exited successfully |
 | OpenWrt 25.12.6 x86/64 and armsr/armv8 virtual machines | Routed static WAN, SNAT, nftables removal and full nftables flush | Each WAN receiver saw all 72 approved probes and zero of 72 unapproved probes. Removing SNAT exposed the LAN source for the approved probes as expected. |
 | OpenWrt 25.12.6 x86/64 and armsr/armv8 virtual machines | Guarded DHCP startup | Both installed the synthetic lease after the gate attached. The x86/64 guest withheld the address when the policy file was absent and recovered when it returned. |
-| OpenWrt 25.12.6 x86/64 virtual machine | Reboot with guarded DHCP | The boot ID changed. The WAN receiver observed zero unapproved packets from 321 probe attempts. An approved destination replied after the reboot. |
+| OpenWrt 25.12.6 x86/64 and armsr/armv8 virtual machines | Reboot with guarded DHCP | Both boot IDs changed. The WAN receivers observed zero unapproved packets from 321 x86/64 and 672 armv8 probe attempts. An approved destination replied after each reboot. |
+| OpenWrt 25.12.6 x86/64 and armsr/armv8 virtual machines | Xray TPROXY with an approved upstream SOCKS endpoint | TCP and UDP reached the synthetic origin. Stopping Xray or flushing nftables cut access, and the WAN capture saw zero direct packets to the unapproved destination. Both protocols recovered. |
 
 The initial packet suite used the Python reference harness for packet
 generation, capture and controls. The migration acceptance used separate
@@ -33,5 +34,5 @@ Ethernet destination to exclude unrelated traffic flooded by the switch.
 
 The Debian tests used copies of existing gateway configurations and local
 DNS fixtures where noted. The OpenWrt tests cover a single routed WAN per
-guest and a software Ethernet device. OpenWrt proxy integration, dual WAN
-failover, and a physical router comparison remain unverified.
+guest and a software Ethernet device. Dual WAN failover, OpenWrt TUN
+integration, and a physical router comparison remain unverified.

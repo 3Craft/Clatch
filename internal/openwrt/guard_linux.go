@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"clatch-gateway/internal/capture"
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
 	"clatch-gateway/internal/policy"
@@ -84,6 +85,34 @@ func Verify(path, logical, physical string) (guard.LinkInfo, error) {
 		return err
 	})
 	return status, err
+}
+
+func StartTPROXY(path string, port uint16) error {
+	if port < 1024 {
+		return fmt.Errorf("TPROXY port must be 1024 or higher")
+	}
+	cfg, err := ReadConfig(path)
+	if err != nil {
+		return err
+	}
+	if cfg.ProxyDevice != "" {
+		return fmt.Errorf("TPROXY and a TUN device cannot share the same OpenWrt profile")
+	}
+	return system.WithLock(lock, func() error {
+		for _, uplink := range cfg.Uplinks {
+			if err := checkNetwork(uplink); err != nil {
+				return err
+			}
+			if _, err := verifyUplink(cfg, uplink); err != nil {
+				return err
+			}
+		}
+		return capture.StartRoutedTPROXY(path, port, quoteDevices(cfg.LANDevices), cfg.lan4, policy.Elements(cfg.direct, 32))
+	})
+}
+
+func StopTPROXY() error {
+	return system.WithLock(lock, capture.StopRoutedTPROXY)
 }
 
 func verifyUplink(cfg Config, uplink Uplink) (guard.LinkInfo, error) {
