@@ -38,11 +38,12 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
 - Read and validate existing approved policy snapshots for v2rayA, mihomo,
   Xray and V2Fly. Render the existing single-arm IPv4 nftables guard.
 - Verify or establish both guard layers before opening IPv4 forwarding for
-  standalone TPROXY gateways. Adopt existing 8-byte and 12-byte settings ABIs.
+  standalone TPROXY and managed mihomo TUN gateways. Adopt existing 8-byte and 12-byte settings ABIs.
 - Manage IPv4 TPROXY interception for standalone mihomo, Xray and V2Fly.
-  Interception maintains its own nftables table and reserved routing state.
+  Managed mihomo TUN uses a persistent root-owned device. Each interception
+  mode owns its nftables table and reserved routing state.
 
-The installer, policy transaction commands, both TUN lifecycles, and OpenWrt
+The installer, policy transaction commands, the v2rayA native TUN lifecycle, and OpenWrt
 network startup integration are in development. Testing on an existing
 gateway should use a disposable clone until its complete migration and
 rollback are verified.

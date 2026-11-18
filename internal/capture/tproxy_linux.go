@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"clatch-gateway/internal/gateway"
@@ -16,17 +17,27 @@ import (
 	"clatch-gateway/internal/system"
 )
 
-const (
-	tableName   = "jdn_v2ray_tproxy"
-	routeTable  = "10048"
-	rulePref    = 10048
-	statePath   = "/run/jdn-v2ray-tproxy.json"
-	defaultPort = 12345
-)
+const defaultPort = 12345
+
+type mode struct {
+	table       string
+	priority    string
+	routeDevice string
+	statePath   string
+	local       bool
+}
+
+var tproxy = mode{
+	table: "jdn_v2ray_tproxy", priority: "10048", routeDevice: "lo",
+	statePath: "/run/jdn-v2ray-tproxy.json", local: true,
+}
 
 type state struct {
-	Config string `json:"config"`
-	Port   uint16 `json:"port"`
+	Config    string `json:"config"`
+	Port      uint16 `json:"port,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Ifindex   uint32 `json:"ifindex,omitempty"`
+	Interface string `json:"interface,omitempty"`
 }
 
 type reserved struct {
@@ -42,6 +53,9 @@ func StartTPROXY(configPath string, port uint16) (state, error) {
 		if err != nil {
 			return err
 		}
+		if gate.Config.IsTUN() {
+			return fmt.Errorf("TPROXY capture requires standalone TPROXY mode")
+		}
 		if _, err := gate.Verify(); err != nil {
 			return err
 		}
@@ -49,28 +63,36 @@ func StartTPROXY(configPath string, port uint16) (state, error) {
 		if err != nil {
 			return err
 		}
-		abs, err := filepath.Abs(configPath)
-		if err != nil {
-			return err
-		}
-		path, err := filepath.EvalSymlinks(abs)
+		path, err := resolve(configPath)
 		if err != nil {
 			return err
 		}
 		owner = state{Config: path, Port: actual}
-		rules := render(policy.Elements(gate.Approved.Prefixes, 32), actual)
-		return start(owner, rules)
+		rules := renderTPROXY(policy.Elements(gate.Approved.Prefixes, 32), actual)
+		return tproxy.start(owner, rules, managedTUN)
 	})
 	return owner, err
 }
 
 func StopTPROXY() error {
+	return stopMode(tproxy)
+}
+
+func resolve(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+func stopMode(capture mode) error {
 	return gateway.WithLock(func() error {
-		_, owned, err := readState()
+		_, owned, err := capture.readState()
 		if err != nil {
 			return err
 		}
-		kernel, err := inspect()
+		kernel, err := capture.inspect()
 		if err != nil {
 			return err
 		}
@@ -78,7 +100,7 @@ func StopTPROXY() error {
 			return fmt.Errorf("unowned TPROXY state exists")
 		}
 		if owned {
-			return stop(kernel)
+			return capture.stop(kernel)
 		}
 		return nil
 	})
@@ -104,8 +126,8 @@ func listener(config policy.Config, requested uint16) (uint16, error) {
 	return requested, nil
 }
 
-func readState() (state, bool, error) {
-	data, err := os.ReadFile(statePath)
+func (capture mode) readState() (state, bool, error) {
+	data, err := os.ReadFile(capture.statePath)
 	if errors.Is(err, os.ErrNotExist) {
 		return state{}, false, nil
 	}
@@ -116,18 +138,23 @@ func readState() (state, bool, error) {
 	if err := json.Unmarshal(data, &owner); err != nil {
 		return state{}, false, err
 	}
-	if !filepath.IsAbs(owner.Config) || owner.Port < 1024 {
+	if !filepath.IsAbs(owner.Config) || capture.local && (owner.Port < 1024 || owner.Mode != "") ||
+		!capture.local && (owner.Mode != "mihomo-managed-tun" || owner.Ifindex == 0 || owner.Port != 0 ||
+			!policy.ValidInterface(owner.Interface)) {
 		return state{}, false, fmt.Errorf("invalid TPROXY ownership record")
 	}
 	return owner, true, nil
 }
 
-func start(owner state, rules string) error {
-	prior, owned, err := readState()
+func (capture mode) start(owner state, rules string, conflicting mode) error {
+	if err := conflicting.requireIdle(); err != nil {
+		return err
+	}
+	prior, owned, err := capture.readState()
 	if err != nil {
 		return err
 	}
-	kernel, err := inspect()
+	kernel, err := capture.inspect()
 	if err != nil {
 		return err
 	}
@@ -142,33 +169,62 @@ func start(owner state, rules string) error {
 		if err != nil {
 			return err
 		}
-		if err := system.WriteAtomic(statePath, append(data, '\n'), 0600); err != nil {
+		if err := system.WriteAtomic(capture.statePath, append(data, '\n'), 0600); err != nil {
 			return err
 		}
 	}
 	previous := kernel
-	err = install(&kernel, rules)
+	err = capture.install(&kernel, rules)
 	if err == nil {
 		return nil
 	}
 	// Roll back only the resources this start attempt added.
 	added := reserved{routes: kernel.routes - previous.routes, rules: kernel.rules - previous.rules, nft: kernel.nft && !previous.nft}
-	recovery := remove(added)
+	recovery := capture.remove(added)
 	if !owned && recovery == nil {
-		recovery = os.Remove(statePath)
+		recovery = os.Remove(capture.statePath)
 	}
 	return errors.Join(err, recovery)
 }
 
-func install(kernel *reserved, rules string) error {
+func (capture mode) requireIdle() error {
+	if _, present, err := capture.readState(); err != nil {
+		return err
+	} else if present {
+		return fmt.Errorf("other transparent interception mode owns resources")
+	}
+	if kernel, err := capture.inspect(); err != nil {
+		return err
+	} else if kernel != (reserved{}) {
+		return fmt.Errorf("conflicting transparent interception resources already exist")
+	}
+	return nil
+}
+
+func (capture mode) routeArgs(command string) []string {
+	args := []string{"-4", "route", command}
+	if capture.local {
+		args = append(args, "local", "0.0.0.0/0")
+	} else {
+		args = append(args, "default")
+	}
+	return append(args, "dev", capture.routeDevice, "table", capture.priority)
+}
+
+func (capture mode) install(kernel *reserved, rules string) error {
+	if !capture.local {
+		if _, err := system.Command("", "ip", "link", "set", "dev", capture.routeDevice, "up"); err != nil {
+			return err
+		}
+	}
 	if kernel.routes == 0 {
-		if _, err := system.Command("", "ip", "-4", "route", "add", "local", "0.0.0.0/0", "dev", "lo", "table", routeTable); err != nil {
+		if _, err := system.Command("", "ip", capture.routeArgs("add")...); err != nil {
 			return err
 		}
 		kernel.routes = 1
 	}
 	if kernel.rules == 0 {
-		if _, err := system.Command("", "ip", "-4", "rule", "add", "priority", routeTable, "fwmark", "0x40/0xc0", "lookup", routeTable); err != nil {
+		if _, err := system.Command("", "ip", "-4", "rule", "add", "priority", capture.priority, "fwmark", "0x40/0xc0", "lookup", capture.priority); err != nil {
 			return err
 		}
 		kernel.rules = 1
@@ -180,33 +236,33 @@ func install(kernel *reserved, rules string) error {
 	return nil
 }
 
-func stop(kernel reserved) error {
-	if err := remove(kernel); err != nil {
+func (capture mode) stop(kernel reserved) error {
+	if err := capture.remove(kernel); err != nil {
 		return err
 	}
-	return os.Remove(statePath)
+	return os.Remove(capture.statePath)
 }
 
-func remove(kernel reserved) error {
+func (capture mode) remove(kernel reserved) error {
 	if kernel.nft {
-		if _, err := system.Command("", "nft", "delete", "table", "inet", tableName); err != nil {
+		if _, err := system.Command("", "nft", "delete", "table", "inet", capture.table); err != nil {
 			return err
 		}
 	}
 	if kernel.rules != 0 {
-		if _, err := system.Command("", "ip", "-4", "rule", "del", "priority", routeTable, "fwmark", "0x40/0xc0", "lookup", routeTable); err != nil {
+		if _, err := system.Command("", "ip", "-4", "rule", "del", "priority", capture.priority, "fwmark", "0x40/0xc0", "lookup", capture.priority); err != nil {
 			return err
 		}
 	}
 	if kernel.routes != 0 {
-		if _, err := system.Command("", "ip", "-4", "route", "del", "local", "0.0.0.0/0", "dev", "lo", "table", routeTable); err != nil {
+		if _, err := system.Command("", "ip", capture.routeArgs("del")...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func inspect() (reserved, error) {
+func (capture mode) inspect() (reserved, error) {
 	var resources reserved
 	tables, err := system.Command("", "nft", "-j", "list", "tables")
 	if err != nil {
@@ -224,20 +280,20 @@ func inspect() (reserved, error) {
 		return resources, err
 	}
 	for _, object := range list.Objects {
-		if object.Table.Name == tableName && object.Table.Family == "inet" {
+		if object.Table.Name == capture.table && object.Table.Family == "inet" {
 			resources.nft = true
 		}
 	}
-	if err := inspectRoutes(&resources); err != nil {
+	if err := capture.inspectRoutes(&resources); err != nil {
 		return resources, err
 	}
-	if err := inspectRules(&resources); err != nil {
+	if err := capture.inspectRules(&resources); err != nil {
 		return resources, err
 	}
 	return resources, nil
 }
 
-func inspectRoutes(resources *reserved) error {
+func (capture mode) inspectRoutes(resources *reserved) error {
 	data, err := system.Command("", "ip", "-j", "-4", "route", "show", "table", "all")
 	if err != nil {
 		return err
@@ -252,10 +308,14 @@ func inspectRoutes(resources *reserved) error {
 		return err
 	}
 	for _, route := range routes {
-		if strings.Trim(string(route.Table), "\"") != routeTable {
+		if strings.Trim(string(route.Table), "\"") != capture.priority {
 			continue
 		}
-		if resources.routes != 0 || route.Type != "local" || route.Dev != "lo" ||
+		expectedType := ""
+		if capture.local {
+			expectedType = "local"
+		}
+		if resources.routes != 0 || route.Type != expectedType || route.Dev != capture.routeDevice ||
 			route.Dst != "default" && route.Dst != "0.0.0.0/0" {
 			return fmt.Errorf("reserved TPROXY routing table contains an unrecognized route")
 		}
@@ -264,7 +324,7 @@ func inspectRoutes(resources *reserved) error {
 	return nil
 }
 
-func inspectRules(resources *reserved) error {
+func (capture mode) inspectRules(resources *reserved) error {
 	data, err := system.Command("", "ip", "-j", "-4", "rule", "show")
 	if err != nil {
 		return err
@@ -280,11 +340,11 @@ func inspectRules(resources *reserved) error {
 		return err
 	}
 	for _, rule := range rules {
-		if rule.Priority != rulePref {
+		if strconv.Itoa(rule.Priority) != capture.priority {
 			continue
 		}
 		if resources.rules != 0 || rule.Src != "all" || rule.Mark != "0x40" || rule.Mask != "0xc0" ||
-			strings.Trim(string(rule.Table), "\"") != routeTable {
+			strings.Trim(string(rule.Table), "\"") != capture.priority {
 			return fmt.Errorf("reserved TPROXY rule priority is occupied")
 		}
 		resources.rules++
@@ -292,7 +352,7 @@ func inspectRules(resources *reserved) error {
 	return nil
 }
 
-func render(direct string, port uint16) string {
+func renderTPROXY(direct string, port uint16) string {
 	return fmt.Sprintf(`add table inet %[1]s
 delete table inet %[1]s
 table inet %[1]s {
@@ -312,5 +372,5 @@ table inet %[1]s {
   meta l4proto { tcp, udp } meta mark set 0x40
  }
 }
-`, tableName, direct, port)
+`, tproxy.table, direct, port)
 }

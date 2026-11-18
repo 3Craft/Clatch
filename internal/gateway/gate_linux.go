@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"clatch-gateway/internal/device"
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
 	"clatch-gateway/internal/policy"
@@ -34,8 +35,8 @@ func OpenStandalone(path string) (*Gate, error) {
 	if err != nil {
 		return nil, err
 	}
-	if config.Proxy == nil || config.Proxy.Mode != "tproxy" {
-		return nil, fmt.Errorf("Go startup gate currently requires a standalone TPROXY backend")
+	if config.Proxy == nil {
+		return nil, fmt.Errorf("Go startup gate currently requires a standalone backend")
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(config.ApprovedPolicy), "pending-transaction.json")); err == nil {
 		return nil, fmt.Errorf("recover pending policy transaction before starting")
@@ -87,18 +88,24 @@ func ensure(path, iface string) (map[string]any, error) {
 	if err := system.MountBPF(); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(filepath.Join(gate.Config.Pins, "link")); errors.Is(err, os.ErrNotExist) {
-		settings := guard.Settings{DiagnosticUID: gate.Config.DiagnosticUID}
+	_, statErr := os.Lstat(filepath.Join(gate.Config.Pins, "link"))
+	create := errors.Is(statErr, os.ErrNotExist)
+	if statErr != nil && !create {
+		return nil, statErr
+	}
+	settings, err := gate.settings(create)
+	if err != nil {
+		return nil, err
+	}
+	if create {
 		if _, err := guard.Attach(iface, "-", gate.Config.Pins, gate.Config.Entries(gate.Approved), settings); err != nil {
 			return nil, err
 		}
-	} else if err != nil {
+	}
+	if _, err := gate.verifyTCX(settings); err != nil {
 		return nil, err
 	}
-	if _, err := gate.verifyTCX(); err != nil {
-		return nil, err
-	}
-	rules, err := firewall.RenderGuard(gate.Config, gate.Approved, 0)
+	rules, err := firewall.RenderGuard(gate.Config, gate.Approved, settings.TrustedTUNIfindex)
 	if err != nil {
 		return nil, err
 	}
@@ -112,7 +119,7 @@ func ensure(path, iface string) (map[string]any, error) {
 	if err := gate.applyProbeRoutes(); err != nil {
 		return nil, err
 	}
-	return result, openGate(iface)
+	return result, openGate(iface, gate.Config.IsTUN())
 }
 
 func VerifyStandalone(path string) (map[string]any, error) {
@@ -132,12 +139,29 @@ func (g *Gate) fingerprintPath() string {
 	return filepath.Join(filepath.Dir(g.Config.ApprovedPolicy), "clatch-nft.sha256")
 }
 
-func (g *Gate) verifyTCX() (map[string]any, error) {
-	info, err := guard.VerifyStandalone(g.Config.Interface, g.Config.Pins)
+func (g *Gate) settings(create bool) (guard.Settings, error) {
+	settings := guard.Settings{DiagnosticUID: g.Config.DiagnosticUID}
+	if !g.Config.IsTUN() {
+		return settings, nil
+	}
+	read := device.VerifyManaged
+	if create {
+		read = device.PrepareManaged
+	}
+	identity, err := read()
+	settings.TrustedTUNIfindex = identity.Ifindex
+	return settings, err
+}
+
+func (g *Gate) verifyTCX(settings guard.Settings) (map[string]any, error) {
+	verify := guard.VerifyStandalone
+	if g.Config.IsTUN() {
+		verify = guard.Verify
+	}
+	info, err := verify(g.Config.Interface, g.Config.Pins)
 	if err != nil {
 		return nil, err
 	}
-	settings := guard.Settings{DiagnosticUID: g.Config.DiagnosticUID}
 	mapID, err := guard.CheckPolicy(g.Config.Pins, g.Config.Entries(g.Approved), settings)
 	if err != nil {
 		return nil, err
@@ -149,20 +173,24 @@ func (g *Gate) verifyTCX() (map[string]any, error) {
 	return map[string]any{
 		"ifindex": info.Ifindex, "link_id": info.LinkID, "program_id": info.ProgramID,
 		"map_id": mapID, "network_sha256": g.Approved.NetworkSHA256,
-		"diagnostic_uid": g.Config.DiagnosticUID, "trusted_tun_ifindex": uint32(0),
+		"diagnostic_uid": g.Config.DiagnosticUID, "trusted_tun_ifindex": settings.TrustedTUNIfindex,
 		"public_ipv6": false, "stats": counters,
 	}, nil
 }
 
 func (g *Gate) Verify() (map[string]any, error) {
-	result, err := g.verifyTCX()
+	settings, err := g.settings(false)
+	if err != nil {
+		return nil, err
+	}
+	result, err := g.verifyTCX(settings)
 	if err != nil {
 		return nil, err
 	}
 	if err := checkFilters(g.Config.Interface); err != nil {
 		return nil, err
 	}
-	rules, err := firewall.RenderGuard(g.Config, g.Approved, 0)
+	rules, err := firewall.RenderGuard(g.Config, g.Approved, settings.TrustedTUNIfindex)
 	if err != nil {
 		return nil, err
 	}
@@ -221,12 +249,15 @@ func checkFilters(iface string) error {
 	return nil
 }
 
-func openGate(iface string) error {
+func openGate(iface string, tun bool) error {
 	if _, err := system.Command("", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.ipv6.conf.all.forwarding=0"); err != nil {
 		return err
 	}
 	var keys []string
 	for _, scope := range []string{"all", "default", iface} {
+		if tun {
+			keys = append(keys, "net/ipv4/conf/"+scope+"/rp_filter=0")
+		}
 		for _, key := range []string{"send_redirects", "accept_redirects", "secure_redirects"} {
 			keys = append(keys, "net/ipv4/conf/"+scope+"/"+key+"=0")
 		}

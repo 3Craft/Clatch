@@ -20,6 +20,8 @@ const usage = `Usage: clatch config check CONFIG
        clatch guard verify CONFIG
        clatch tproxy start CONFIG [PORT]
        clatch tproxy stop
+       clatch managed-tun start CONFIG
+       clatch managed-tun stop
        clatch bpf COMMAND [arguments]
   attach IFACE OBJECT PINS POLICY UID 0 [TUN]
   prepare OBJECT PINS POLICY UID 0 [TUN]
@@ -68,6 +70,8 @@ func run(args []string) (any, error) {
 		return runGuard(args[1:])
 	case "tproxy":
 		return runCapture(args[1:])
+	case "managed-tun":
+		return runManagedTUN(args[1:])
 	default:
 		return nil, errUsage
 	}

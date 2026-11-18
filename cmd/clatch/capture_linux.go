@@ -25,3 +25,13 @@ func runCapture(args []string) (any, error) {
 	}
 	return nil, errUsage
 }
+
+func runManagedTUN(args []string) (any, error) {
+	if len(args) == 1 && args[0] == "stop" {
+		return nil, capture.StopManagedTUN()
+	}
+	if len(args) == 2 && args[0] == "start" {
+		return capture.StartManagedTUN(args[1])
+	}
+	return nil, errUsage
+}
