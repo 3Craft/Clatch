@@ -103,6 +103,13 @@ points. Confirm after checking the guard, DNS and expected routes. Use
 `/root/clatch-migration/clatch-recover migrate rollback /root/clatch-migration`
 to restore the previous entry points, including after confirmation.
 
+If a v2rayA package update replaced the running executables, resolve the
+drift before migrating. When the GeoIP file has changed too, restore the
+copy that matches `geoip_sha256` in the approved policy before restarting
+v2rayA. Verify the legacy guard and DNS, then rerun the migration plan.
+After migration, keep that approved copy available while using
+`gateway-whitelist refresh --apply` to approve the new GeoIP data.
+
 Run the application health check from a host whose traffic follows the
 gateway under test. Use an expected exit address for that deployment.
 Add `--expect-empty-aaaa` for an IPv4-only DNS policy. `--conntrack` checks
