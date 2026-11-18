@@ -14,6 +14,7 @@ import (
 	"clatch-gateway/internal/device"
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
+	"clatch-gateway/internal/native"
 	"clatch-gateway/internal/policy"
 	"clatch-gateway/internal/proxy"
 	"clatch-gateway/internal/system"
@@ -28,15 +29,24 @@ func WithLock(action func() error) error {
 type Gate struct {
 	Config   policy.Config
 	Approved policy.Approved
+	Path     string
 }
 
 func OpenStandalone(path string) (*Gate, error) {
+	gate, err := open(path)
+	if err == nil && gate.Config.Proxy == nil {
+		return nil, fmt.Errorf("capture requires a standalone backend")
+	}
+	return gate, err
+}
+
+func open(path string) (*Gate, error) {
 	config, err := policy.ReadConfig(path)
 	if err != nil {
 		return nil, err
 	}
-	if config.Proxy == nil {
-		return nil, fmt.Errorf("Go startup gate currently requires a standalone backend")
+	if config.Proxy == nil && !config.NativeTUN {
+		return nil, fmt.Errorf("guard requires a standalone backend or native v2rayA TUN")
 	}
 	if _, err := os.Lstat(filepath.Join(filepath.Dir(config.ApprovedPolicy), "pending-transaction.json")); err == nil {
 		return nil, fmt.Errorf("recover pending policy transaction before starting")
@@ -47,18 +57,20 @@ func OpenStandalone(path string) (*Gate, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := config.CheckSource(approved); err != nil {
-		return nil, err
-	}
-	if config.Proxy.Kind == "mihomo" {
-		if _, err := proxy.ReadMihomo(config); err != nil {
+	if config.Proxy != nil {
+		if err := verifySource(config, approved, path); err != nil {
 			return nil, err
 		}
+		if config.Proxy.Kind == "mihomo" {
+			if _, err := proxy.ReadMihomo(config); err != nil {
+				return nil, err
+			}
+		}
 	}
-	return &Gate{Config: config, Approved: approved}, nil
+	return &Gate{Config: config, Approved: approved, Path: path}, nil
 }
 
-func EnsureStandalone(path, iface string) (map[string]any, error) {
+func Ensure(path, iface string) (map[string]any, error) {
 	if !policy.ValidInterface(iface) {
 		return nil, fmt.Errorf("startup requires a valid trusted gate interface")
 	}
@@ -75,12 +87,26 @@ func EnsureStandalone(path, iface string) (map[string]any, error) {
 }
 
 func ensure(path, iface string) (map[string]any, error) {
-	gate, err := OpenStandalone(path)
+	config, err := policy.ReadConfig(path)
 	if err != nil {
 		return nil, err
 	}
-	if gate.Config.Interface != iface {
+	if config.Interface != iface {
 		return nil, fmt.Errorf("configured interface differs from trusted gate")
+	}
+	if config.Proxy != nil {
+		if err := recoverPolicy(config, path); err != nil {
+			return nil, err
+		}
+	}
+	gate, err := open(path)
+	if err != nil {
+		return nil, err
+	}
+	if gate.Config.NativeTUN {
+		if err := gate.recoverNative(); err != nil {
+			return nil, err
+		}
 	}
 	if err := checkFilters(iface); err != nil {
 		return nil, err
@@ -94,6 +120,25 @@ func ensure(path, iface string) (map[string]any, error) {
 		return nil, statErr
 	}
 	settings, err := gate.settings(create)
+	if gate.Config.NativeTUN && !create {
+		if err != nil {
+			if revokeErr := gate.switchNative(native.Snapshot{}); revokeErr != nil {
+				return nil, errors.Join(err, revokeErr)
+			}
+			settings, err = gate.settings(false)
+		} else {
+			active, readErr := guard.Dump(gate.Config.Pins)
+			if readErr != nil {
+				return nil, readErr
+			}
+			if active.TrustedTUNIfindex != settings.TrustedTUNIfindex {
+				if err := gate.switchNative(native.Snapshot{}); err != nil {
+					return nil, err
+				}
+				settings.TrustedTUNIfindex = 0
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +167,10 @@ func ensure(path, iface string) (map[string]any, error) {
 	return result, openGate(iface, gate.Config.IsTUN())
 }
 
-func VerifyStandalone(path string) (map[string]any, error) {
+func Verify(path string) (map[string]any, error) {
 	var result map[string]any
 	err := WithLock(func() error {
-		gate, err := OpenStandalone(path)
+		gate, err := open(path)
 		if err != nil {
 			return err
 		}
@@ -143,6 +188,14 @@ func (g *Gate) settings(create bool) (guard.Settings, error) {
 	settings := guard.Settings{DiagnosticUID: g.Config.DiagnosticUID}
 	if !g.Config.IsTUN() {
 		return settings, nil
+	}
+	if g.Config.NativeTUN {
+		if create {
+			return settings, native.Publish(native.Snapshot{})
+		}
+		identity, err := native.Identity(g.Config)
+		settings.TrustedTUNIfindex = identity.Ifindex
+		return settings, err
 	}
 	read := device.VerifyManaged
 	if create {

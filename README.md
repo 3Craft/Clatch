@@ -6,12 +6,11 @@ The Linux kernel keeps the TCX link attached across process exit and nftables
 reloads.
 
 Clatch uses Go for configuration, kernel state and operations. The eBPF packet
-classifier is written in C. The source and binaries are licensed under
-GPL-2.0-only.
+classifier is written in C. The project source is GPL-2.0-only. Dependencies retain their upstream licenses.
 
 ## Build
 
-Go 1.25 or newer can build both release binaries. The eBPF object requires
+Go 1.26 or newer can build both release binaries. The eBPF object requires
 Clang with a BPF target, Linux UAPI headers and libbpf's compile-time headers.
 
 ```sh
@@ -42,11 +41,16 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
 - Manage IPv4 TPROXY interception for standalone mihomo, Xray and V2Fly.
   Managed mihomo TUN uses a persistent root-owned device. Each interception
   mode owns its nftables table and reserved routing state.
+- Validate v2rayA's live ephemeral TUN identity and approved GeoIP/whitelist
+  data. Manage native TUN return authorization and the LAN DNS redirect
+  through the v2rayA transparent proxy lifecycle hook.
+- Stage standalone policy updates through the intersection of old and new
+  CIDRs. Require a matching source and DNS readiness before committing.
+- Run Debian ping and traceroute through the restricted diagnostic account.
 
-The installer, policy transaction commands, the v2rayA native TUN lifecycle, and OpenWrt
-network startup integration are in development. Testing on an existing
-gateway should use a disposable clone until its complete migration and
-rollback are verified.
+The installer, v2rayA whitelist transactions and OpenWrt network startup
+integration are in development. Use disposable clones for migration testing.
+See [verification](docs/verification.md) for the exercised paths.
 
 ## Inspect a compatible snapshot
 

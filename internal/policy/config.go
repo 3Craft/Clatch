@@ -214,11 +214,15 @@ func (c Config) TUNDevice() string {
 
 type Approved struct {
 	Schema        int             `json:"schema"`
+	Created       string          `json:"created,omitempty"`
 	Networks      []string        `json:"networks"`
 	NetworkSHA256 string          `json:"network_sha256"`
 	ProxyKind     string          `json:"proxy_kind,omitempty"`
 	ProxyMode     string          `json:"proxy_mode,omitempty"`
 	NativeMode    string          `json:"native_mode,omitempty"`
+	Whitelist     json.RawMessage `json:"native_whitelist,omitempty"`
+	GeoIP         string          `json:"geoip,omitempty"`
+	GeoIPSHA256   string          `json:"geoip_sha256,omitempty"`
 	Transition    json.RawMessage `json:"transition,omitempty"`
 	SourcePolicy  json.RawMessage `json:"source_policy,omitempty"`
 	SourceSHA256  string          `json:"source_sha256,omitempty"`
@@ -231,6 +235,10 @@ func (c Config) ReadApproved() (Approved, error) {
 	if err := readJSON(c.ApprovedPolicy, &approved, false); err != nil {
 		return Approved{}, err
 	}
+	return c.ValidateApproved(approved)
+}
+
+func (c Config) ValidateApproved(approved Approved) (Approved, error) {
 	prefixes, err := Parse(approved.Networks)
 	if err != nil {
 		return Approved{}, err
@@ -298,6 +306,7 @@ func readJSON(path string, dest any, strict bool) error {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	if strict {
 		decoder.DisallowUnknownFields()
 	}

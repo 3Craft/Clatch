@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"clatch-gateway/internal/diagnostic"
 	"clatch-gateway/internal/guard"
 )
 
@@ -22,6 +23,11 @@ const usage = `Usage: clatch config check CONFIG
        clatch tproxy stop
        clatch managed-tun start CONFIG
        clatch managed-tun stop
+       clatch native inspect|bind|unbind CONFIG
+       clatch native hook --stage STAGE [--config CONFIG]
+       clatch diagnostic ping|traceroute CONFIG [options]
+       clatch policy stage CONFIG DIRECTORY SOURCE
+       clatch policy commit|rollback CONFIG DIRECTORY
        clatch bpf COMMAND [arguments]
   attach IFACE OBJECT PINS POLICY UID 0 [TUN]
   prepare OBJECT PINS POLICY UID 0 [TUN]
@@ -39,6 +45,13 @@ var errUsage = errors.New(usage)
 
 func main() {
 	args := os.Args[1:]
+	if len(args) >= 3 && args[0] == "diagnostic" {
+		code, err := diagnostic.Run(args[1], args[2], args[3:])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "clatch: %v\n", err)
+		}
+		os.Exit(code)
+	}
 	result, err := run(args)
 	if err == nil && result != nil {
 		err = json.NewEncoder(os.Stdout).Encode(result)
@@ -72,6 +85,10 @@ func run(args []string) (any, error) {
 		return runCapture(args[1:])
 	case "managed-tun":
 		return runManagedTUN(args[1:])
+	case "native":
+		return runNative(args[1:])
+	case "policy":
+		return runPolicy(args[1:])
 	default:
 		return nil, errUsage
 	}

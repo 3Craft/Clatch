@@ -1,0 +1,368 @@
+//go:build linux
+
+package gateway
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"clatch-gateway/internal/firewall"
+	"clatch-gateway/internal/guard"
+	"clatch-gateway/internal/policy"
+	"clatch-gateway/internal/system"
+)
+
+type policyTransaction struct {
+	Schema     int             `json:"schema"`
+	State      string          `json:"state"`
+	Config     string          `json:"config"`
+	BootID     string          `json:"boot_id"`
+	Old        policy.Approved `json:"old"`
+	Desired    policy.Approved `json:"desired"`
+	Restricted policy.Approved `json:"restricted"`
+}
+
+func transactionPointer(config policy.Config) string {
+	return filepath.Join(filepath.Dir(config.ApprovedPolicy), "clatch-policy-pending.json")
+}
+
+func transactionFile(directory string) string {
+	return filepath.Join(directory, "transaction.json")
+}
+
+func PolicyTransaction(action, path, dir, source string) (string, error) {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) != dir || dir == "/" {
+		return "", fmt.Errorf("transaction directory must be a canonical absolute path")
+	}
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	var result string
+	err = WithLock(func() error {
+		switch action {
+		case "stage":
+			result, err = stagePolicy(path, dir, source)
+		case "commit", "rollback":
+			result, err = finishPolicy(path, dir, action)
+		default:
+			err = fmt.Errorf("unknown policy transaction action")
+		}
+		return err
+	})
+	return result, err
+}
+
+func stagePolicy(path, directory, input string) (string, error) {
+	gate, err := OpenStandalone(path)
+	if err != nil {
+		return "", err
+	}
+	if _, found, err := savedTransaction(gate.Config, path); err != nil {
+		return "", err
+	} else if found {
+		return "", fmt.Errorf("an unfinished policy transaction exists")
+	}
+	if _, err := gate.Verify(); err != nil {
+		return "", err
+	}
+	source, err := policy.ReadSource(input)
+	if err != nil {
+		return "", err
+	}
+	next, err := gate.Config.ApprovalFor(source)
+	if err != nil {
+		return "", err
+	}
+	restricted, err := restrictPolicy(gate.Config, gate.Approved, next)
+	if err != nil {
+		return "", err
+	}
+	boot, err := bootID()
+	if err != nil {
+		return "", err
+	}
+	if err := os.Mkdir(directory, 0700); err != nil {
+		return "", err
+	}
+	tx := policyTransaction{
+		Schema: 1, State: "prepared", Config: path, BootID: boot,
+		Old: gate.Approved, Desired: next, Restricted: restricted,
+	}
+	if err := putJSON(transactionFile(directory), tx); err != nil {
+		return "", err
+	}
+	if err := putJSON(transactionPointer(gate.Config), directory); err != nil {
+		return "", err
+	}
+	if err := applyTransaction(gate, restricted, true); err != nil {
+		return "", err
+	}
+	tx.State = "staged"
+	return tx.State, putJSON(transactionFile(directory), tx)
+}
+
+func restrictPolicy(config policy.Config, old, next policy.Approved) (policy.Approved, error) {
+	shared := policy.Intersect(old.Prefixes, next.Prefixes)
+	restricted := old
+	restricted.Transition = json.RawMessage("true")
+	restricted.Networks = policy.Strings(shared)
+	restricted.NetworkSHA256 = policy.Digest(shared)
+	return config.ValidateApproved(restricted)
+}
+
+func savedTransaction(config policy.Config, path string) (policyTransaction, bool, error) {
+	var tx policyTransaction
+	raw, err := os.ReadFile(transactionPointer(config))
+	if errors.Is(err, os.ErrNotExist) {
+		return tx, false, nil
+	}
+	if err != nil {
+		return tx, false, err
+	}
+	var directory string
+	if err := json.Unmarshal(raw, &directory); err != nil {
+		return tx, false, err
+	}
+	if !filepath.IsAbs(directory) || filepath.Clean(directory) != directory || directory == "/" {
+		return tx, false, fmt.Errorf("invalid policy transaction ownership path")
+	}
+	raw, err = os.ReadFile(transactionFile(directory))
+	if err != nil {
+		return tx, false, err
+	}
+	if err := json.Unmarshal(raw, &tx); err != nil {
+		return tx, false, err
+	}
+	canonical, err := filepath.Abs(path)
+	if err != nil {
+		return tx, false, err
+	}
+	if tx.Schema != 1 || tx.Config != canonical || config.Proxy == nil {
+		return tx, false, fmt.Errorf("policy transaction belongs to another gateway")
+	}
+	tx.Old, err = config.ValidateApproved(tx.Old)
+	if err != nil {
+		return tx, false, err
+	}
+	tx.Desired, err = config.ValidateApproved(tx.Desired)
+	if err != nil {
+		return tx, false, err
+	}
+	expected, err := restrictPolicy(config, tx.Old, tx.Desired)
+	if err != nil {
+		return tx, false, err
+	}
+	if expected.NetworkSHA256 != tx.Restricted.NetworkSHA256 {
+		return tx, false, fmt.Errorf("transaction restriction differs from the old and desired policy intersection")
+	}
+	tx.Restricted = expected
+	return tx, true, nil
+}
+
+func verifySource(config policy.Config, approved policy.Approved, path string) error {
+	tx, exists, err := savedTransaction(config, path)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return config.CheckSource(approved)
+	}
+	boot, err := bootID()
+	if err != nil {
+		return err
+	}
+	if tx.State != "staged" || tx.BootID != boot || approved.NetworkSHA256 != tx.Restricted.NetworkSHA256 {
+		return fmt.Errorf("active policy transaction requires completion or recovery")
+	}
+	if config.CheckSource(tx.Old) != nil && config.CheckSource(tx.Desired) != nil {
+		return fmt.Errorf("standalone source diverged from both sides of the policy transaction")
+	}
+	return nil
+}
+
+func finishPolicy(path, directory, action string) (string, error) {
+	config, err := policy.ReadConfig(path)
+	if err != nil {
+		return "", err
+	}
+	tx, exists, err := savedTransaction(config, path)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return "", fmt.Errorf("no pending Clatch policy transaction")
+	}
+	var owned string
+	pointer, err := os.ReadFile(transactionPointer(config))
+	if err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(pointer, &owned); err != nil || owned != directory {
+		return "", fmt.Errorf("requested transaction directory differs from its ownership record")
+	}
+	boot, err := bootID()
+	if err != nil {
+		return "", err
+	}
+	target, status := tx.Old, "rolled_back"
+	if action == "commit" {
+		if tx.State != "staged" && tx.State != "committed" || tx.BootID != boot {
+			return "", fmt.Errorf("only a staged transaction in this boot can commit")
+		}
+		target, status = tx.Desired, "committed"
+	} else if tx.State == "committed" {
+		return "", fmt.Errorf("a committed transaction cannot be rolled back as a pending update")
+	}
+	if err := config.CheckSource(target); err != nil {
+		return "", err
+	}
+	if action == "commit" {
+		if err := verifyDNS(config.Proxy); err != nil {
+			return "", err
+		}
+	}
+	gate := &Gate{Config: config, Approved: target, Path: path}
+	if err := applyTransaction(gate, target, false); err != nil {
+		return "", err
+	}
+	tx.State = status
+	if err := putJSON(transactionFile(directory), tx); err != nil {
+		return "", err
+	}
+	return status, os.Remove(transactionPointer(config))
+}
+
+func applyTransaction(gate *Gate, target policy.Approved, shrinking bool) error {
+	settings, err := gate.settings(false)
+	if err != nil {
+		return err
+	}
+	verify := guard.VerifyStandalone
+	if gate.Config.IsTUN() {
+		verify = guard.Verify
+	}
+	if _, err := verify(gate.Config.Interface, gate.Config.Pins); err != nil {
+		return err
+	}
+	if err := putJSON(gate.Config.ApprovedPolicy, target); err != nil {
+		return err
+	}
+	entries := gate.Config.Entries(target)
+	if shrinking {
+		if err := guard.UpdatePolicy(gate.Config.Pins, entries); err != nil {
+			return err
+		}
+	}
+	rules, err := firewall.RenderGuard(gate.Config, target, settings.TrustedTUNIfindex)
+	if err != nil {
+		return err
+	}
+	if err := firewall.Apply(rules, gate.Config.RulesFile, gate.fingerprintPath()); err != nil {
+		return err
+	}
+	if !shrinking {
+		if err := guard.UpdatePolicy(gate.Config.Pins, entries); err != nil {
+			return err
+		}
+	}
+	gate.Approved = target
+	_, err = gate.Verify()
+	return err
+}
+
+func verifyDNS(proxy *policy.Proxy) error {
+	if _, err := system.Command("", "systemctl", "is-active", "--quiet", proxy.Service); err != nil {
+		return fmt.Errorf("standalone service must be running before policy commit: %w", err)
+	}
+	address := net.JoinHostPort(proxy.DNSAddress, strconv.Itoa(int(proxy.DNSPort)))
+	for _, network := range []string{"udp4", "tcp4"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+		resolver := net.Resolver{
+			PreferGo: true,
+			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var dialer net.Dialer
+				return dialer.DialContext(ctx, network, address)
+			},
+		}
+		addrs, err := resolver.LookupIP(ctx, "ip4", "www.baidu.com.")
+		cancel()
+		if err != nil || len(addrs) == 0 {
+			return fmt.Errorf("standalone DNS is not ready over %s; restrictive policy remains", network)
+		}
+	}
+	return nil
+}
+
+func recoverPolicy(config policy.Config, path string) error {
+	tx, exists, err := savedTransaction(config, path)
+	if err != nil || !exists {
+		return err
+	}
+	if config.CheckSource(tx.Old) != nil && config.CheckSource(tx.Desired) != nil {
+		return fmt.Errorf("policy recovery cannot identify the current standalone source")
+	}
+	raw, err := os.ReadFile(transactionPointer(config))
+	if err != nil {
+		return err
+	}
+	var directory string
+	if err := json.Unmarshal(raw, &directory); err != nil {
+		return err
+	}
+	boot, err := bootID()
+	if err != nil {
+		return err
+	}
+	if tx.State == "committed" || tx.State == "rolled_back" || tx.State == "boot_rolled_back" {
+		target := tx.Old
+		if tx.State == "committed" {
+			target = tx.Desired
+		}
+		if err := config.CheckSource(target); err != nil {
+			return err
+		}
+		if err := putJSON(config.ApprovedPolicy, target); err != nil {
+			return err
+		}
+		return os.Remove(transactionPointer(config))
+	}
+	if tx.State != "prepared" && tx.State != "staged" {
+		return fmt.Errorf("unrecognized pending policy status")
+	}
+	if tx.BootID == boot {
+		gate := &Gate{Config: config, Approved: tx.Restricted, Path: path}
+		if err := applyTransaction(gate, tx.Restricted, true); err != nil {
+			return err
+		}
+		tx.State = "staged"
+		return putJSON(transactionFile(directory), tx)
+	}
+	// Recover the old source before either the backend or the network is opened.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", config.Proxy.Service)
+	exit, stopped := command.Run().(*exec.ExitError)
+	if !stopped || exit.ExitCode() != 3 {
+		return fmt.Errorf("policy boot recovery requires a stopped standalone backend")
+	}
+	if err := system.WriteAtomic(config.Proxy.PolicySource, append(tx.Old.SourcePolicy, '\n'), 0600); err != nil {
+		return err
+	}
+	if err := putJSON(config.ApprovedPolicy, tx.Old); err != nil {
+		return err
+	}
+	tx.State = "boot_rolled_back"
+	if err := putJSON(transactionFile(directory), tx); err != nil {
+		return err
+	}
+	return os.Remove(transactionPointer(config))
+}
