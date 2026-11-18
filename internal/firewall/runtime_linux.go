@@ -13,6 +13,30 @@ import (
 	"clatch-gateway/internal/system"
 )
 
+func RequireUnusedGuardTable() error {
+	raw, err := system.Command("", "nft", "-j", "list", "tables")
+	if err != nil {
+		return err
+	}
+	var present struct {
+		Objects []struct {
+			Table struct {
+				Family string `json:"family"`
+				Name   string `json:"name"`
+			} `json:"table"`
+		} `json:"nftables"`
+	}
+	if err := json.Unmarshal(raw, &present); err != nil {
+		return err
+	}
+	for _, object := range present.Objects {
+		if object.Table.Family == "inet" && object.Table.Name == tableName {
+			return fmt.Errorf("an existing nftables guard requires explicit migration or recovery")
+		}
+	}
+	return nil
+}
+
 func Apply(rules, rulesPath, fingerprintPath string) error {
 	return ApplyTable(tableName, rules, rulesPath, fingerprintPath)
 }

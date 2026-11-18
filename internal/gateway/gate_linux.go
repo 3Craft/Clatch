@@ -300,6 +300,13 @@ func checkFilters(iface string) error {
 	return nil
 }
 
+func CheckUnusedEgress(iface string) error {
+	if err := checkFilters(iface); err != nil {
+		return err
+	}
+	return guard.RequireUnusedEgress(iface)
+}
+
 func openGate(iface string, tun bool) error {
 	if _, err := system.Command("", "sysctl", "-q", "-w", "net.ipv4.ip_forward=1", "net.ipv6.conf.all.forwarding=0"); err != nil {
 		return err

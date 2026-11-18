@@ -227,6 +227,21 @@ func Attach(iface, object, dir string, policy Policy, settings Settings) (LinkIn
 	return attach(iface, object, dir, policy, settings, false, programName)
 }
 
+func RequireUnusedEgress(iface string) error {
+	index, err := interfaceIndex(iface)
+	if err != nil {
+		return err
+	}
+	programs, err := query(index)
+	if err != nil {
+		return err
+	}
+	if len(programs.Programs) != 0 {
+		return fmt.Errorf("interface %s already has TCX egress programs", iface)
+	}
+	return nil
+}
+
 // AttachLegacy keeps the previous non-TUN settings ABI available for rollback.
 func AttachLegacy(iface, object, dir string, policy Policy, settings Settings) (LinkInfo, error) {
 	return attach(iface, object, dir, policy, settings, true, programName)

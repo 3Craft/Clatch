@@ -75,14 +75,8 @@ func statePath(config policy.Config) string {
 
 func buildPlan() (plan, error) {
 	var p plan
-	data, err := os.ReadFile("/etc/os-release")
-	if err != nil {
+	if err := verifyDebian13(); err != nil {
 		return p, err
-	}
-	release := "\n" + string(data) + "\n"
-	if !strings.Contains(release, "\nID=debian\n") ||
-		!strings.Contains(release, "\nVERSION_ID=\"13\"\n") && !strings.Contains(release, "\nVERSION_ID=13\n") {
-		return p, fmt.Errorf("existing gateway migration requires Debian 13")
 	}
 	config, err := policy.ReadConfig(configPath)
 	if err != nil {

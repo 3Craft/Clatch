@@ -48,12 +48,41 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
   a matching source and DNS readiness before committing. The v2rayA whitelist
   command previews edits, backs up SQLite and supports recovery and restore.
 - Run Debian ping and traceroute through the restricted diagnostic account.
+- Probe UDP/TCP DNS, direct and proxied application requests, the expected
+  proxy exit address, and optional conntrack marks with `clatch health`.
+- Install a new Debian 13 guard from a static ifupdown profile, with a
+  recovery executable and systemd rollback timer in the installation backup.
 - Migrate an existing Debian 13 gateway with its current configuration,
   approved policy and pinned TCX link. Confirm or roll back the change using
   the migration backup.
 - Guard routed OpenWrt IPv4 WAN interfaces before netifd applies a static
   address or starts DHCP. The separate WAN TCX program checks destinations
   after masquerading.
+
+## Install on Debian 13
+
+Prepare the static IPv4 ifupdown interface and the proxy service first. Set
+the proxy configuration and CIDR source in
+`deploy/debian/standalone.example.json`. A profile without `proxy` uses a
+preconfigured v2rayA native TUN and its SQLite and GeoIP data. The installer
+uses the existing proxy credentials and service enablement.
+
+```sh
+./clatch-linux-amd64 install plan /root/gateway-profile.json
+./clatch-linux-amd64 install apply /root/gateway-profile.json /root/clatch-install
+gateway-guard verify
+clatch install confirm /root/clatch-install
+```
+
+Apply leaves an originally stopped backend stopped. Start it when ready and
+verify DNS before confirming. Keep the private backup on a persistent local
+filesystem. The recovery command restores the previous installation files.
+For an originally stopped backend, recovery retains the egress guard and
+holds forwarding disabled.
+
+```sh
+/root/clatch-install/clatch-recover install rollback /root/clatch-install
+```
 
 ## Migrate an existing Debian gateway
 
@@ -72,6 +101,15 @@ The migration arms a systemd rollback timer before replacing the entry
 points. Confirm after checking the guard, DNS and expected routes. Use
 `/root/clatch-migration/clatch-recover migrate rollback /root/clatch-migration`
 to restore the previous entry points, including after confirmation.
+
+Run the application health check from a host whose traffic follows the
+gateway under test. Use an expected exit address for that deployment.
+Add `--expect-empty-aaaa` for an IPv4-only DNS policy. `--conntrack` checks
+the socket marks when running on the gateway.
+
+```sh
+clatch health --dns 192.0.2.1 --expected-exit 203.0.113.10
+```
 
 ## OpenWrt
 

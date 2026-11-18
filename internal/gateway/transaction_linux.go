@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,9 +17,11 @@ import (
 
 	"clatch-gateway/internal/firewall"
 	"clatch-gateway/internal/guard"
+	"clatch-gateway/internal/health"
 	"clatch-gateway/internal/native"
 	"clatch-gateway/internal/policy"
 	"clatch-gateway/internal/system"
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 type policyTransaction struct {
@@ -346,6 +349,16 @@ func applyTransaction(gate *Gate, target policy.Approved, shrinking bool) error 
 
 const nativeDNS = "127.2.0.17:53"
 
+func CheckBackendDNS(config policy.Config) error {
+	if config.NativeTUN {
+		return verifyDNSAt(config.NativeService, nativeDNS, []string{"www.baidu.com.", "ip.fm."})
+	}
+	if config.Proxy == nil {
+		return fmt.Errorf("configured backend is required for DNS readiness")
+	}
+	return verifyDNS(config.Proxy)
+}
+
 func verifyDNS(proxy *policy.Proxy) error {
 	address := net.JoinHostPort(proxy.DNSAddress, strconv.Itoa(int(proxy.DNSPort)))
 	return verifyDNSAt(proxy.Service, address, []string{"www.baidu.com."})
@@ -355,20 +368,14 @@ func verifyDNSAt(service, address string, names []string) error {
 	if _, err := system.Command("", "systemctl", "is-active", "--quiet", service); err != nil {
 		return fmt.Errorf("proxy service must be running before policy commit: %w", err)
 	}
+	server, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return err
+	}
 	for _, name := range names {
 		for _, network := range []string{"udp4", "tcp4"} {
-			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
-			resolver := net.Resolver{
-				PreferGo: true,
-				Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					var dialer net.Dialer
-					return dialer.DialContext(ctx, network, address)
-				},
-			}
-			addrs, err := resolver.LookupIP(ctx, "ip4", name)
-			cancel()
-			if err != nil || len(addrs) == 0 {
-				return fmt.Errorf("proxy DNS is not ready for %s over %s", name, network)
+			if _, err := health.DNS(context.Background(), server, network, name, dnsmessage.TypeA, false); err != nil {
+				return fmt.Errorf("proxy DNS is not ready for %s over %s: %w", name, network, err)
 			}
 		}
 	}

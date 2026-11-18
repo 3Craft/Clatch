@@ -50,6 +50,20 @@ type nativeSetting struct {
 	DNSHijack string `json:"dnsHijack"`
 }
 
+func PrepareTUNApproval(config policy.Config, geoIP string, running bool) (policy.Approved, error) {
+	if _, err := validateSettings(config.NativeConfDir); err != nil {
+		return policy.Approved{}, err
+	}
+	whitelist, err := ReadWhitelist(config)
+	if err != nil {
+		return policy.Approved{}, err
+	}
+	if !running && geoIP == "" {
+		geoIP = "/usr/share/v2raya/geoip.dat"
+	}
+	return Approval(config, whitelist, geoIP)
+}
+
 func validateSettings(confdir string) (uint16, error) {
 	var setting nativeSetting
 	if err := readSetting(confdir, settingsKey, &setting); err != nil {

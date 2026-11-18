@@ -65,7 +65,7 @@ func ReadConfig(path string) (Config, error) {
 	var config Config
 	err := readJSON(path, &config, true)
 	if err == nil {
-		err = config.validate()
+		err = config.Validate()
 	}
 	return config, err
 }
@@ -78,7 +78,7 @@ func filePath(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
 }
 
-func (c *Config) validate() error {
+func (c *Config) Validate() error {
 	if !ValidInterface(c.Interface) || c.DiagnosticUID == 0 ||
 		c.DiagnosticUID == 65534 || c.DiagnosticUID == ^uint32(0) ||
 		c.PublicIPv6 || c.NativeTUN && c.Proxy != nil {

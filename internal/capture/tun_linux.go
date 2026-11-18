@@ -67,6 +67,7 @@ table inet %[1]s {
   type route hook output priority mangle; policy accept;
   meta nfproto != ipv4 return
   meta mark & 0x80 != 0 return
+  ip daddr 127.0.0.0/8 return
   ip daddr @direct4 return
   meta l4proto { tcp, udp } counter meta mark set 0x40 comment "jdn-tun-route-host"
  }

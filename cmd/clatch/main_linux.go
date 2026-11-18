@@ -26,8 +26,10 @@ const usage = `Usage: clatch config check CONFIG
        clatch native inspect|bind|unbind CONFIG
        clatch native hook --stage STAGE [--config CONFIG]
        clatch diagnostic ping|traceroute CONFIG [options]
+       clatch health --dns ADDRESS --expected-exit IP [options]
        clatch openwrt prepare|verify CONFIG LOGICAL DEVICE
        clatch openwrt tproxy-start CONFIG PORT | tproxy-stop
+       clatch install plan PROFILE | apply PROFILE BACKUP | confirm|rollback BACKUP
        clatch migrate plan | apply|confirm|rollback BACKUP
        clatch whitelist [--config CONFIG] show|add|remove|import|refresh|restore|recover
        clatch policy stage CONFIG DIRECTORY SOURCE
@@ -97,8 +99,12 @@ func run(args []string) (any, error) {
 		return runPolicy(args[1:])
 	case "whitelist":
 		return runWhitelist(args[1:])
+	case "health":
+		return runHealth(args[1:])
 	case "migrate":
 		return runMigration(args[1:])
+	case "install":
+		return runInstall(args[1:])
 	case "openwrt":
 		return runOpenWrt(args[1:])
 	default:

@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "debian-xray-gateway",
+  "interface": "ens18",
+  "address": "192.0.2.10/24",
+  "gateway": "192.0.2.1",
+  "lan": ["192.0.2.0/24"],
+  "public_ipv6": false,
+  "proxy": {
+    "kind": "xray-core",
+    "mode": "tproxy",
+    "service": "xray.service",
+    "binary": "/usr/local/bin/xray",
+    "config": "/usr/local/etc/xray/config.json",
+    "policy_source": "/root/gateway-policy.json",
+    "dns_address": "127.0.0.1",
+    "dns_port": 53
+  }
+}

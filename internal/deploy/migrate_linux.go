@@ -66,11 +66,7 @@ func apply(backup string) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, err
-	}
-	artifact, err := os.ReadFile(executable)
+	artifact, err := runningExecutable()
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +93,7 @@ func apply(backup string) (map[string]any, error) {
 	if err := writeJSON(statusPath, deployment{Backup: backup, State: "armed"}); err != nil {
 		return nil, err
 	}
-	if err := m.arm(); err != nil {
+	if err := m.arm("migrate"); err != nil {
 		return nil, fmt.Errorf("activate rollback timer for %s: %w", backup, err)
 	}
 	status, err := installChanges(p, m)
@@ -279,12 +275,12 @@ func writeFile(path string, state fileState) error {
 	return nil
 }
 
-func (m manifest) arm() error {
+func (m manifest) arm(action string) error {
 	unitDir := "/etc/systemd/system"
 	command := strconv.Quote(strings.ReplaceAll(filepath.Join(m.Backup, "clatch-recover"), "%", "%%")) +
-		" migrate recover " + strconv.Quote(strings.ReplaceAll(m.Backup, "%", "%%"))
-	service := "[Unit]\nDescription=Recover an unconfirmed Clatch migration\n[Service]\nType=oneshot\nExecStart=" + command + "\nTimeoutStartSec=120\n"
-	timer := "[Unit]\nDescription=Rollback deadline for unconfirmed Clatch migration\n[Timer]\nOnActiveSec=10min\nAccuracySec=1s\n[Install]\nWantedBy=timers.target\n"
+		" " + action + " recover " + strconv.Quote(strings.ReplaceAll(m.Backup, "%", "%%"))
+	service := "[Unit]\nDescription=Recover an unconfirmed Clatch deployment\n[Service]\nType=oneshot\nExecStart=" + command + "\nTimeoutStartSec=120\n"
+	timer := "[Unit]\nDescription=Rollback deadline for unconfirmed Clatch deployment\n[Timer]\nOnActiveSec=10min\nAccuracySec=1s\n[Install]\nWantedBy=timers.target\n"
 	for name, text := range map[string]string{m.Unit + ".service": service, m.Unit + ".timer": timer} {
 		path := filepath.Join(unitDir, name)
 		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
