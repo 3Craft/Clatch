@@ -26,7 +26,7 @@ func TestStatusServiceTextAndJSON(t *testing.T) {
 	for _, test := range []struct {
 		name, kind, result, active, sub, text string
 	}{
-		{"completed oneshot", "oneshot", "success", "active", "exited", "启动任务已完成"},
+		{"completed oneshot", "oneshot", "success", "active", "exited", "startup task completed"},
 		{"failed oneshot", "oneshot", "exit-code", "failed", "failed", "failed (failed)"},
 		{"stopped oneshot", "oneshot", "success", "inactive", "dead", "inactive (dead)"},
 		{"exited non-oneshot", "simple", "success", "active", "exited", "active (exited)"},

@@ -154,7 +154,7 @@ func (r statusReport) text() string {
 	for _, service := range r.Services {
 		state := fmt.Sprintf("%s (%s)", service.Active, service.Sub)
 		if service.kind == "oneshot" && service.result == "success" && service.Active == "active" && service.Sub == "exited" {
-			state = "启动任务已完成"
+			state = "startup task completed"
 		}
 		fmt.Fprintf(&out, "Service        %s %s\n", service.Unit, state)
 	}
