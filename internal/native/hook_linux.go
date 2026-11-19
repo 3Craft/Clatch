@@ -186,7 +186,7 @@ func renderCapture(config policy.Config, approved policy.Approved, local netip.A
 	diagnostic := ""
 	if config.Diagnostic != nil {
 		diagnostic = fmt.Sprintf("  iifname %q ip saddr %s ip daddr %s ip protocol icmp icmp type echo-request icmp code 0 "+
-			"ip frag-off & 0x3fff == 0 ct state { new, established } counter meta mark set meta mark | 0x80 "+
+			"ip frag-off & 0x3fff == 0 ct state { new, established } counter meta mark set meta mark | "+TUNBypassMark+" "+
 			"comment \"jdn-native-tun-lan-icmp-diagnostic\"\n", config.Interface, config.Diagnostic.Source, config.Diagnostic.Destination)
 	}
 	var output strings.Builder
@@ -199,21 +199,21 @@ table inet %[1]s {
   type filter hook prerouting priority mangle; policy accept;
   iifname %[4]q meta nfproto ipv4 fib daddr type local return
   iifname %[4]q meta l4proto { tcp, udp } th dport 53 counter return comment "jdn-native-tun-dns-lan"
-%[5]s  iifname %[4]q ip daddr @direct4 counter meta mark set meta mark | 0x80 comment "jdn-native-tun-direct-lan"
+%[5]s  iifname %[4]q ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "jdn-native-tun-direct-lan"
  }
  chain output {
   type route hook output priority mangle; policy accept;
   meta l4proto { tcp, udp } th dport 53 counter return comment "jdn-native-tun-dns-host"
-  ip daddr @direct4 counter meta mark set meta mark | 0x80 comment "jdn-native-tun-direct-host"
+  ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "jdn-native-tun-direct-host"
  }
  chain postrouting {
   type nat hook postrouting priority srcnat; policy accept;
-  oifname %[4]q meta iif 0 ip saddr 10.0.85.2 ip daddr @direct4 counter snat ip to %[6]s comment "jdn-native-tun-local-source"
+  oifname %[4]q meta iif 0 ip saddr %[9]s ip daddr @direct4 counter snat ip to %[6]s comment "jdn-native-tun-local-source"
  }
 }
 add table inet %[7]s
 delete table inet %[7]s
-`, captureTable, direct4, direct6, config.Interface, diagnostic, local, dnsTable)
+`, captureTable, direct4, direct6, config.Interface, diagnostic, local, dnsTable, TUNBypassMark, TUNIPv4)
 	output.WriteString(renderDNSRedirect(port))
 	return output.String()
 }

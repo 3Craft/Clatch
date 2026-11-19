@@ -21,9 +21,11 @@ import (
 )
 
 const (
-	tunName    = "tun0"
-	tunAddress = "10.0.85.2/30"
-	tunState   = "/run/jdn-v2raya-tun.json"
+	TUNIPv4       = "10.0.85.2"
+	TUNBypassMark = "0x80"
+	tunName       = "tun0"
+	tunAddress    = TUNIPv4 + "/30"
+	tunState      = "/run/jdn-v2raya-tun.json"
 )
 
 type Snapshot struct {

@@ -39,12 +39,13 @@ type dnsCheck struct {
 }
 
 type httpCheck struct {
-	Domain string     `json:"domain"`
-	Role   string     `json:"role"`
-	Status int        `json:"status"`
-	Peer   netip.Addr `json:"peer"`
-	Exit   netip.Addr `json:"exit_ip,omitzero"`
-	Marks  []uint32   `json:"conntrack_marks,omitempty"`
+	Domain           string     `json:"domain"`
+	Role             string     `json:"role"`
+	Status           int        `json:"status"`
+	Peer             netip.Addr `json:"peer"`
+	Exit             netip.Addr `json:"exit_ip,omitzero"`
+	Marks            []uint32   `json:"conntrack_marks,omitempty"`
+	ReplyDestination netip.Addr `json:"conntrack_reply_dst,omitzero"`
 }
 
 type Report struct {
@@ -58,6 +59,14 @@ func Check(ctx context.Context, request Request) (Report, error) {
 	report := Report{Time: time.Now().UTC()}
 	if len(request.Exits) == 0 {
 		return report, fmt.Errorf("at least one approved proxy exit is required")
+	}
+	var nativeTUN *nativeTUNCheck
+	if request.Marks {
+		var err error
+		nativeTUN, err = prepareNativeTUNCheck()
+		if err != nil {
+			return report, fmt.Errorf("prepare conntrack check: %w", err)
+		}
 	}
 	for _, probe := range []struct {
 		domain string
@@ -80,7 +89,7 @@ func Check(ctx context.Context, request Request) (Report, error) {
 		role string
 		mark uint32
 	}{{request.DirectURL, "direct", 0}, {request.ProxyURL, "proxy", 64}} {
-		result, err := inspectHTTP(ctx, request, probe.url, probe.role, probe.mark)
+		result, err := inspectHTTP(ctx, request, probe.url, probe.role, probe.mark, nativeTUN)
 		if err != nil {
 			return report, fmt.Errorf("%s application probe: %w", probe.role, err)
 		}
@@ -90,7 +99,7 @@ func Check(ctx context.Context, request Request) (Report, error) {
 	return report, nil
 }
 
-func inspectHTTP(ctx context.Context, request Request, url, role string, mark uint32) (httpCheck, error) {
+func inspectHTTP(ctx context.Context, request Request, url, role string, mark uint32, nativeTUN *nativeTUNCheck) (httpCheck, error) {
 	var check httpCheck
 	dialer := net.Dialer{Resolver: &net.Resolver{
 		PreferGo: true,
@@ -104,6 +113,7 @@ func inspectHTTP(ctx context.Context, request Request, url, role string, mark ui
 	transport.Proxy = nil
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP1(true)
+	transport.Protocols.SetHTTP2(true)
 	transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp4", address)
 	}
@@ -138,7 +148,9 @@ func inspectHTTP(ctx context.Context, request Request, url, role string, mark ui
 		}
 		check.Exit = exit
 	}
-	if request.Marks {
+	if nativeTUN != nil {
+		err = nativeTUN.verify(&check, local, remote)
+	} else if request.Marks {
 		check.Marks, err = inspectMarks(local, remote, mark)
 	}
 	return check, err
@@ -157,9 +169,10 @@ func parseExit(body string) netip.Addr {
 	return netip.Addr{}
 }
 
-func inspectMarks(local, remote netip.AddrPort, expected uint32) ([]uint32, error) {
-	raw, err := system.Command("", "conntrack", "-L", "-p", "tcp", "-s", local.Addr().Unmap().String(),
-		"-d", remote.Addr().Unmap().String(), "--sport", strconv.Itoa(int(local.Port())), "--dport", strconv.Itoa(int(remote.Port())))
+func inspectMarks(local, remote netip.AddrPort, expected uint32, filters ...string) ([]uint32, error) {
+	args := []string{"-L", "-p", "tcp", "-s", local.Addr().Unmap().String(), "-d", remote.Addr().Unmap().String(),
+		"--sport", strconv.Itoa(int(local.Port())), "--dport", strconv.Itoa(int(remote.Port()))}
+	raw, err := system.Command("", "conntrack", append(args, filters...)...)
 	if err != nil {
 		return nil, err
 	}

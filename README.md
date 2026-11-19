@@ -49,7 +49,7 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
   command previews edits, backs up SQLite and supports recovery and restore.
 - Run Debian ping and traceroute through the restricted diagnostic account.
 - Probe UDP/TCP DNS, direct and proxied application requests, the expected
-  proxy exit address, and optional conntrack marks with `clatch health`.
+  proxy exit address, and optional conntrack verification with `clatch health`.
 - Install a new Debian 13 guard from a static ifupdown profile, with a
   recovery executable and systemd rollback timer in the installation backup.
 - Migrate an existing Debian 13 gateway with its current configuration,
@@ -112,8 +112,10 @@ After migration, keep that approved copy available while using
 
 Run the application health check from a host whose traffic follows the
 gateway under test. Use an expected exit address for that deployment.
-Add `--expect-empty-aaaa` for an IPv4-only DNS policy. `--conntrack` checks
-the socket marks when running on the gateway.
+Add `--expect-empty-aaaa` for an IPv4-only DNS policy. On the gateway,
+`--conntrack` checks the tracked HTTPS flows. For native v2rayA TUN it uses
+the installed gateway policy, route lookup and conntrack reply tuple to verify
+each path. Both native TUN flows have connection mark zero.
 
 ```sh
 clatch health --dns 192.0.2.1 --expected-exit 203.0.113.10

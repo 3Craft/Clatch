@@ -15,9 +15,9 @@ func runHealth(args []string) (any, error) {
 	var request health.Request
 	flags := flag.NewFlagSet("health", flag.ContinueOnError)
 	flags.StringVar(&request.DirectURL, "direct-url", "https://www.baidu.com/", "direct application probe")
-	flags.StringVar(&request.ProxyURL, "proxy-url", "https://ip.fm/", "application probe that returns the proxy exit address")
+	flags.StringVar(&request.ProxyURL, "proxy-url", "https://ip.fm/myip", "application probe that returns the proxy exit address")
 	flags.BoolVar(&request.EmptyAAAA, "expect-empty-aaaa", false, "require a successful empty IPv6 DNS answer")
-	flags.BoolVar(&request.Marks, "conntrack", false, "check conntrack marks on this gateway")
+	flags.BoolVar(&request.Marks, "conntrack", false, "check the tracked HTTPS flows on this gateway")
 	flags.Func("dns", "IPv4 resolver address or address:port", func(value string) error {
 		address, err := netip.ParseAddrPort(value)
 		if err != nil {
