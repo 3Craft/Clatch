@@ -123,10 +123,10 @@ func installChanges(p plan, m manifest) (map[string]any, error) {
 	if _, err := system.Command("", "systemctl", "daemon-reload"); err != nil {
 		return nil, err
 	}
-	if _, err := system.Command("", "systemd-analyze", "verify", guardUnit, p.Service); err != nil {
+	if _, err := system.Command("", "systemd-analyze", "verify", legacyGuardUnit, p.Service); err != nil {
 		return nil, err
 	}
-	status, err := gateway.Ensure(configPath, p.Config.Interface)
+	status, err := gateway.Ensure(legacyConfigPath, p.Config.Interface)
 	if err != nil {
 		return nil, err
 	}
@@ -135,20 +135,20 @@ func installChanges(p plan, m manifest) (map[string]any, error) {
 	}
 	switch {
 	case p.Config.IsNative():
-		_, err = gateway.NativeHook(configPath, p.Config.NativeConfDir, "post-start", "", false)
+		_, err = gateway.NativeHook(legacyConfigPath, p.Config.NativeConfDir, "post-start", "", false)
 	case p.Config.IsTUN():
-		_, err = capture.StartManagedTUN(configPath)
+		_, err = capture.StartManagedTUN(legacyConfigPath)
 	default:
-		_, err = capture.StartTPROXY(configPath, 0)
+		_, err = capture.StartTPROXY(legacyConfigPath, 0)
 	}
 	if err != nil {
 		return nil, err
 	}
-	return gateway.Verify(configPath)
+	return gateway.Verify(legacyConfigPath)
 }
 
 func confirm(backup string) (map[string]any, error) {
-	config, err := policy.ReadConfig(configPath)
+	config, err := policy.ReadConfig(legacyConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -168,12 +168,12 @@ func confirm(backup string) (map[string]any, error) {
 			return nil, fmt.Errorf("installed migration file changed: %s", item.Path)
 		}
 	}
-	for _, unit := range []string{guardUnit, "nftables.service", "networking.service", m.Service} {
+	for _, unit := range []string{legacyGuardUnit, "nftables.service", "networking.service", m.Service} {
 		if _, err := system.Command("", "systemctl", "is-active", "--quiet", unit); err != nil {
 			return nil, err
 		}
 	}
-	status, err := gateway.Verify(configPath)
+	status, err := gateway.Verify(legacyConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +187,7 @@ func confirm(backup string) (map[string]any, error) {
 }
 
 func rollback(backup string) (map[string]any, error) {
-	config, err := policy.ReadConfig(configPath)
+	config, err := policy.ReadConfig(legacyConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func Recover(backup string) (map[string]any, error) {
 	}
 	var result map[string]any
 	err := system.WithLock(migrationLock, func() error {
-		config, err := policy.ReadConfig(configPath)
+		config, err := policy.ReadConfig(legacyConfigPath)
 		if err != nil {
 			return err
 		}

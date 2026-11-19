@@ -52,7 +52,7 @@ TimeoutStartSec=90
 [Install]
 WantedBy=sysinit.target
 `, device, p.Service, gate)
-	dependencies := "[Unit]\nRequires=" + guardUnit + "\nAfter=" + guardUnit + "\n"
+	dependencies := "[Unit]\nRequires=" + GuardUnit + "\nAfter=" + GuardUnit + "\n"
 	backend := dependencies + "[Service]\nExecStartPre=+" + gate + "\n"
 	if p.Config.Proxy != nil {
 		kind, port := "tproxy", " "+strconv.Itoa(int(p.Port))
@@ -78,7 +78,7 @@ WantedBy=sysinit.target
 		{"/usr/local/bin/ping", wrapper("diagnostic ping " + configPath), 0755},
 		{"/usr/local/bin/traceroute", wrapper("diagnostic traceroute " + configPath), 0755},
 		{defaultSysctl, []byte(strings.Join(p.sysctlKeys(), "=0\n") + "=0\n"), 0644},
-		{filepath.Join("/etc/systemd/system", guardUnit), []byte(unit), 0644},
+		{filepath.Join("/etc/systemd/system", GuardUnit), []byte(unit), 0644},
 		{installDropIn("networking.service"), []byte(dependencies), 0644},
 		{installDropIn("ifup@" + netUnit + ".service"), []byte(dependencies), 0644},
 		{installDropIn("nftables.service"), []byte(nft), 0644},

@@ -24,7 +24,7 @@ import (
 
 const (
 	retainedSysctl   = "/etc/sysctl.d/99-zzzz-clatch-retained.conf"
-	nativePinsRecord = "/etc/jdn-gateway/native-tun-generations.json"
+	nativePinsRecord = policy.DefaultConfigDir + "/native-tun-generations.json"
 )
 
 type installManifest struct {
@@ -264,10 +264,10 @@ func (m installManifest) apply(createAccount bool) (map[string]any, error) {
 	if _, err := system.Command("", "systemctl", "daemon-reload"); err != nil {
 		return nil, err
 	}
-	if _, err := system.Command("", "systemd-analyze", "verify", "--man=no", guardUnit, "nftables.service"); err != nil {
+	if _, err := system.Command("", "systemd-analyze", "verify", "--man=no", GuardUnit, "nftables.service"); err != nil {
 		return nil, err
 	}
-	if _, err := system.Command("", "systemctl", "enable", "--now", guardUnit, "nftables.service"); err != nil {
+	if _, err := system.Command("", "systemctl", "enable", "--now", GuardUnit, "nftables.service"); err != nil {
 		return nil, err
 	}
 	if m.ProxyActive {
@@ -469,7 +469,7 @@ func (m installManifest) restore() error {
 }
 
 func (m installManifest) restoreUnits() error {
-	link := filepath.Join("/etc/systemd/system/sysinit.target.wants", guardUnit)
+	link := filepath.Join("/etc/systemd/system/sysinit.target.wants", GuardUnit)
 	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -566,7 +566,7 @@ func (m installManifest) restoreConnectivity() error {
 			return err
 		}
 	}
-	for _, path := range []string{defaultPolicy, defaultRules, "/etc/jdn-gateway/clatch-nft.sha256"} {
+	for _, path := range []string{defaultPolicy, defaultRules, policy.DefaultConfigDir + "/clatch-nft.sha256"} {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

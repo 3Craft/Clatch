@@ -22,6 +22,19 @@ func TestInspectionHelp(t *testing.T) {
 	}
 }
 
+func TestDebianInspectionConfigDefault(t *testing.T) {
+	const want = "/etc/clatch/config.json"
+	for _, command := range []string{"status", "health", "config check", "guard verify"} {
+		opts, err := readOptions(command, nil, false)
+		if err != nil || opts.explicit || opts.config != want {
+			t.Fatalf("%s: default configuration = %q (explicit: %t, error: %v)", command, opts.config, opts.explicit, err)
+		}
+		if !strings.Contains(commandHelp(command), want) {
+			t.Fatalf("%s: help does not show the default configuration %q", command, want)
+		}
+	}
+}
+
 func TestStatusServiceTextAndJSON(t *testing.T) {
 	for _, test := range []struct {
 		name, kind, result, active, sub, text string

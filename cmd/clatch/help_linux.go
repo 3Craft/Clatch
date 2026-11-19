@@ -5,6 +5,8 @@ package main
 import (
 	"os"
 	"path/filepath"
+
+	"clatch-gateway/internal/policy"
 )
 
 const rootHelp = `Usage: clatch COMMAND [options]
@@ -31,14 +33,14 @@ var helpText = map[string]string{
 	"status": `Usage: clatch status [--config CONFIG] [--json]
 
 Show local Debian gateway status. The default configuration is
-/etc/jdn-gateway/config.json. Use --json for structured output.
+` + policy.DefaultConfigPath + `. Use --json for structured output.
 `,
 	"health": `Usage: clatch health [options]
 
 Run DNS and HTTPS probes. Read defaults from the local configuration and its
 sibling health.json. Explicit probe options override saved values.
 
-  --config CONFIG      Gateway config (default /etc/jdn-gateway/config.json)
+  --config CONFIG      Gateway config (default ` + policy.DefaultConfigPath + `)
   --dns ADDRESS        IPv4 resolver address or address:port
   --expected-exit IP   Expected proxy exit IPv4 address (repeatable)
   --conntrack          Verify the tracked HTTPS flows on this gateway
@@ -48,9 +50,9 @@ sibling health.json. Explicit probe options override saved values.
   --json               Write a JSON report, including failed checks
 `,
 	"config":       "Usage: clatch config check [CONFIG] [--config CONFIG] [--json]\n",
-	"config check": "Usage: clatch config check [CONFIG] [--config CONFIG] [--json]\n\nValidate the local configuration and its approved policy. Default config /etc/jdn-gateway/config.json.\n",
+	"config check": "Usage: clatch config check [CONFIG] [--config CONFIG] [--json]\n\nValidate the local configuration and its approved policy. Default config " + policy.DefaultConfigPath + ".\n",
 	"guard":        "Usage: clatch guard verify [CONFIG] [--config CONFIG] [--json]\n       clatch guard ensure CONFIG IFACE\n",
-	"guard verify": "Usage: clatch guard verify [CONFIG] [--config CONFIG] [--json]\n\nVerify nftables and TCX. Default config /etc/jdn-gateway/config.json.\n",
+	"guard verify": "Usage: clatch guard verify [CONFIG] [--config CONFIG] [--json]\n\nVerify nftables and TCX. Default config " + policy.DefaultConfigPath + ".\n",
 	"guard ensure": "Usage: clatch guard ensure CONFIG IFACE\n\nApply or restore enforcement using the specified trusted interface.\n",
 	"install":      "Usage: clatch install plan PROFILE\n       clatch install apply PROFILE BACKUP\n       clatch install confirm|rollback BACKUP\n",
 	"migrate":      "Usage: clatch migrate plan\n       clatch migrate apply BACKUP\n       clatch migrate confirm|rollback BACKUP\n",

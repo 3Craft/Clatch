@@ -66,7 +66,9 @@ the proxy configuration and CIDR source in
 `deploy/debian/standalone.example.json`. A profile without `proxy` reads the
 prepared v2rayA mode and whitelist from its SQLite and GeoIP data. Set
 `native_mode` to `tproxy` or `tun` to require a specific mode. The installer
-uses the existing proxy credentials and service enablement.
+uses the existing proxy credentials and service enablement. It writes the
+gateway configuration and generated policy to `/etc/clatch/` and enables
+`clatch-guard.service`.
 
 ```sh
 ./clatch-linux-amd64 install plan /root/gateway-profile.json
@@ -85,11 +87,15 @@ holds forwarding disabled.
 /root/clatch-install/clatch-recover install rollback /root/clatch-install
 ```
 
-## Migrate an existing Debian gateway
+## Adopt a legacy Python gateway on Debian
 
 Run the commands on a disposable clone first. Keep the backup on a persistent
 local filesystem and use a new absolute path. The plan checks the running
-legacy guard, installed interception mode and approved policy.
+legacy guard, installed interception mode and approved policy. This adoption
+keeps the existing boot wiring and configuration in `/etc/jdn-gateway/`.
+For that layout, pass `--config /etc/jdn-gateway/config.json` to
+`clatch guard verify`, `clatch config check` or `clatch health`. Use
+`systemctl status jdn-gateway-guard.service` to check the legacy unit.
 
 ```sh
 ./clatch-linux-amd64 migrate plan
@@ -123,9 +129,9 @@ clatch config check
 clatch health
 ```
 
-These commands default to `/etc/jdn-gateway/config.json`. Use `--config` for a
+These commands default to `/etc/clatch/config.json`. Use `--config` for a
 different gateway file. Health checks use the sibling `health.json` for probe
-defaults. An example for `/etc/jdn-gateway/health.json` is below.
+defaults. An example for `/etc/clatch/health.json` is below.
 
 ```json
 {
@@ -205,8 +211,8 @@ hardware targets and failure cases.
 ## Inspect a compatible snapshot
 
 ```sh
-./dist/clatch-linux-amd64 config check /etc/jdn-gateway/config.json
-./dist/clatch-linux-amd64 nft render /etc/jdn-gateway/config.json
+./dist/clatch-linux-amd64 config check /etc/clatch/config.json
+./dist/clatch-linux-amd64 nft render /etc/clatch/config.json
 ```
 
 The `bpf` subcommands operate on explicit interfaces and bpffs paths. Passing

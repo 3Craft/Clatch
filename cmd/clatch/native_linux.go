@@ -39,7 +39,7 @@ func runNativeHook(args []string) (any, error) {
 	kind := flags.String("transparent-type", "", "transparent proxy mode")
 	check := flags.Bool("check", false, "validate the DNS rules without changing them")
 	confdir := flags.String("v2raya-confdir", "", "v2rayA configuration directory")
-	config := flags.String("config", "/etc/jdn-gateway/config.json", "approved guard configuration")
+	config := flags.String("config", policy.DefaultConfigPath, "approved guard configuration")
 	if err := flags.Parse(args); err != nil {
 		return nil, err
 	}

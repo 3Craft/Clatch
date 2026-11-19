@@ -76,7 +76,7 @@ func localStatus(path string, explicit bool) (statusReport, error) {
 			report.Mode = "native-tun"
 		}
 	}
-	for _, unit := range []string{"jdn-gateway-guard.service", backend} {
+	for _, unit := range []string{deploy.GuardUnit, backend} {
 		service, err := readServiceStatus(unit)
 		report.Services = append(report.Services, service)
 		report.issues(unit, err)

@@ -14,7 +14,10 @@ import (
 	"clatch-gateway/internal/guard"
 )
 
-const DefaultConfigPath = "/etc/jdn-gateway/config.json"
+const (
+	DefaultConfigDir  = "/etc/clatch"
+	DefaultConfigPath = DefaultConfigDir + "/config.json"
+)
 
 var (
 	interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)

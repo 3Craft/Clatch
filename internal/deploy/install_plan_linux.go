@@ -27,13 +27,15 @@ import (
 )
 
 const (
-	installState   = "/etc/jdn-gateway/clatch-install.json"
+	GuardUnit      = "clatch-guard.service"
+	configPath     = policy.DefaultConfigPath
+	installState   = policy.DefaultConfigDir + "/clatch-install.json"
 	interfacesPath = "/etc/network/interfaces"
-	defaultPolicy  = "/etc/jdn-gateway/approved-policy.json"
-	defaultSource  = "/etc/jdn-gateway/source-policy.json"
-	defaultRules   = "/etc/jdn-gateway/guard.nft"
+	defaultPolicy  = policy.DefaultConfigDir + "/approved-policy.json"
+	defaultSource  = policy.DefaultConfigDir + "/source-policy.json"
+	defaultRules   = policy.DefaultConfigDir + "/guard.nft"
 	defaultPins    = "/sys/fs/bpf/jdn_gateway"
-	defaultSysctl  = "/etc/sysctl.d/99-zzzz-jdn-gateway-guard.conf"
+	defaultSysctl  = "/etc/sysctl.d/99-zzzz-clatch-guard.conf"
 )
 
 type installProfile struct {
@@ -113,8 +115,9 @@ func makeInstallPlan(path string, test bool) (installPlan, error) {
 	if err != nil {
 		return p, err
 	}
-	for _, item := range []string{configPath, legacyGuardPath, binaryPath, defaultPolicy, defaultRules, defaultSource, defaultPins,
-		filepath.Join("/etc/systemd/system", guardUnit), installState, retainedSysctl, nativePinsRecord} {
+	for _, item := range []string{configPath, legacyConfigPath, legacyGuardPath, binaryPath, defaultPolicy, defaultRules,
+		defaultSource, defaultPins, defaultSysctl, filepath.Join("/etc/systemd/system", GuardUnit),
+		filepath.Join("/etc/systemd/system", legacyGuardUnit), installState, retainedSysctl, nativePinsRecord} {
 		if _, err := os.Lstat(item); !errors.Is(err, os.ErrNotExist) {
 			return p, fmt.Errorf("an existing or inaccessible gateway artifact requires review at %s", item)
 		}
