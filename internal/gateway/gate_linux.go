@@ -236,14 +236,14 @@ func (g *Gate) Verify() (map[string]any, error) {
 		return nil, err
 	}
 	if err := checkFilters(g.Config.Interface); err != nil {
-		return nil, err
+		return result, err
 	}
 	rules, err := firewall.RenderGuard(g.Config, g.Approved, settings.TrustedTUNIfindex)
 	if err != nil {
-		return nil, err
+		return result, err
 	}
 	if err := firewall.Verify(rules, g.fingerprintPath()); err != nil {
-		return nil, err
+		return result, err
 	}
 	return result, nil
 }

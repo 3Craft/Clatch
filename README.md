@@ -110,16 +110,50 @@ v2rayA. Verify the legacy guard and DNS, then rerun the migration plan.
 After migration, keep that approved copy available while using
 `gateway-whitelist refresh --apply` to approve the new GeoIP data.
 
-Run the application health check from a host whose traffic follows the
-gateway under test. Use an expected exit address for that deployment.
-Add `--expect-empty-aaaa` for an IPv4-only DNS policy. On the gateway,
-`--conntrack` checks the tracked HTTPS flows. For native v2rayA TUN it uses
-the installed gateway policy, route lookup and conntrack reply tuple to verify
-each path. Both native TUN flows have connection mark zero.
+## Inspect a Debian gateway
+
+`clatch status` shows local service, guard, policy, tunnel, and deployment
+state. It can show a degraded gateway or a pending change without sending
+external probes. Add `--json` for automation.
 
 ```sh
-clatch health --dns 192.0.2.1 --expected-exit 203.0.113.10
+clatch status
+clatch guard verify
+clatch config check
+clatch health
 ```
+
+These commands default to `/etc/jdn-gateway/config.json`. Use `--config` for a
+different gateway file. Health checks use the sibling `health.json` for probe
+defaults. An example for `/etc/jdn-gateway/health.json` is below.
+
+```json
+{
+  "expected_exits": ["203.0.113.10"],
+  "conntrack": true
+}
+```
+
+Set `expected_exits` to the approved proxy exits for that gateway. With one
+local IPv4 address in the gateway config, health uses it as the DNS endpoint
+on port 53. Set `dns` in `health.json` to choose another DNS endpoint. Set
+`expect_empty_aaaa` when DNS policy requires a successful empty AAAA reply.
+Explicit probe options override the file.
+
+Run the health probes from a host whose traffic follows the gateway under
+test. On the gateway, `--conntrack` checks the tracked HTTPS flows. For native
+v2rayA TUN it uses the installed policy, route lookup, and conntrack reply
+tuple. Both native TUN flows have connection mark zero.
+
+```sh
+clatch health --json --dns 192.0.2.1 --expected-exit 203.0.113.10
+```
+
+The check commands write JSON on success and failure. Health reports include
+passed, failed, and skipped probes. Exit code 0 means the check succeeded, 1
+means a check or operation failed, and 2 means the arguments were invalid.
+`status` returns 0 when it collects a report, including a degraded report.
+Use `clatch --help` or `clatch COMMAND --help` to discover options.
 
 ## OpenWrt
 

@@ -22,8 +22,11 @@ type nativeTUNCheck struct {
 	direct  []netip.Prefix
 }
 
-func prepareNativeTUNCheck() (*nativeTUNCheck, error) {
-	config, err := policy.ReadConfig("/etc/jdn-gateway/config.json")
+func prepareNativeTUNCheck(path string) (*nativeTUNCheck, error) {
+	if path == "" {
+		path = policy.DefaultConfigPath
+	}
+	config, err := policy.ReadConfig(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil // The connection-mark check also supports hosts without a Clatch profile.
 	}

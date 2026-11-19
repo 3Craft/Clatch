@@ -32,6 +32,7 @@ type policyTransaction struct {
 	Old        policy.Approved `json:"old"`
 	Desired    policy.Approved `json:"desired"`
 	Restricted policy.Approved `json:"restricted"`
+	Directory  string          `json:"-"`
 }
 
 func transactionPointer(config policy.Config) string {
@@ -40,6 +41,24 @@ func transactionPointer(config policy.Config) string {
 
 func transactionFile(directory string) string {
 	return filepath.Join(directory, "transaction.json")
+}
+
+type PendingPolicyStatus struct {
+	State            string     `json:"state"`
+	Directory        string     `json:"directory"`
+	RollbackDeadline *time.Time `json:"rollback_deadline,omitempty"`
+}
+
+func PendingPolicy(config policy.Config, path string) (*PendingPolicyStatus, error) {
+	tx, found, err := savedTransaction(config, path)
+	if err != nil || !found {
+		return nil, err
+	}
+	status := &PendingPolicyStatus{State: tx.State, Directory: tx.Directory}
+	if config.IsNative() && filepath.Base(tx.Directory) == "guard" {
+		status.RollbackDeadline, err = system.TimerDeadline(filepath.Base(filepath.Dir(tx.Directory)) + ".timer")
+	}
+	return status, err
 }
 
 func PolicyTransaction(action, path, dir, source, geoIP string) (string, error) {
@@ -218,6 +237,7 @@ func savedTransaction(config policy.Config, path string) (policyTransaction, boo
 		return tx, false, fmt.Errorf("transaction restriction differs from the old and desired policy intersection")
 	}
 	tx.Restricted = expected
+	tx.Directory = directory
 	return tx, true, nil
 }
 

@@ -4,6 +4,7 @@ package system
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,28 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// TimerDeadline reads the next scheduled activation of an existing systemd timer.
+func TimerDeadline(unit string) (*time.Time, error) {
+	raw, err := Command("", "systemctl", "list-timers", "--all", "--output=json", "--no-pager", unit)
+	if err != nil {
+		return nil, err
+	}
+	var timers []struct {
+		Unit string `json:"unit"`
+		Next uint64 `json:"next"`
+	}
+	if err := json.Unmarshal(raw, &timers); err != nil {
+		return nil, fmt.Errorf("read timer %s: %w", unit, err)
+	}
+	for _, timer := range timers {
+		if timer.Unit == unit && timer.Next > 0 && timer.Next <= uint64(1<<63-1) {
+			deadline := time.UnixMicro(int64(timer.Next)).UTC()
+			return &deadline, nil
+		}
+	}
+	return nil, nil
+}
 
 func Command(input string, command string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

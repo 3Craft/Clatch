@@ -1,6 +1,7 @@
 package health
 
 import (
+	"context"
 	"crypto/tls"
 	"io"
 	"net/http"
@@ -8,6 +9,29 @@ import (
 	"net/netip"
 	"testing"
 )
+
+func TestCheckRetainsAllFailedProbes(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	report, err := Check(ctx, Request{
+		Resolver:  netip.MustParseAddrPort("127.0.0.1:53"),
+		DirectURL: "https://192.0.2.1/", ProxyURL: "https://203.0.113.10/",
+		Exits: []netip.Addr{netip.MustParseAddr("203.0.113.10")},
+	})
+	if err == nil || report.Passed || len(report.DNS) != 10 || len(report.HTTP) != 2 {
+		t.Fatalf("incomplete failure report: %+v, %v", report, err)
+	}
+	for _, check := range report.DNS {
+		if check.State != "failed" || check.Error == "" {
+			t.Fatalf("invalid DNS failure: %+v", check)
+		}
+	}
+	for _, check := range report.HTTP {
+		if check.State != "failed" || check.Error == "" || check.Role == "" {
+			t.Fatalf("invalid HTTPS failure: %+v", check)
+		}
+	}
+}
 
 func TestInspectHTTPNegotiatesTLS(t *testing.T) {
 	exit := netip.MustParseAddr("203.0.113.10")
