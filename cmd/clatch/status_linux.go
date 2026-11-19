@@ -19,6 +19,8 @@ type serviceStatus struct {
 	Unit   string `json:"unit"`
 	Active string `json:"active"`
 	Sub    string `json:"substate"`
+	kind   string
+	result string
 }
 
 type statusReport struct {
@@ -114,7 +116,7 @@ func readServiceStatus(unit string) (serviceStatus, error) {
 		unit += ".service"
 	}
 	status := serviceStatus{Unit: unit}
-	raw, err := system.Command("", "systemctl", "show", "--property=ActiveState,SubState", unit)
+	raw, err := system.Command("", "systemctl", "show", "--property=ActiveState,SubState,Type,Result", unit)
 	if err != nil {
 		return status, err
 	}
@@ -125,6 +127,10 @@ func readServiceStatus(unit string) (serviceStatus, error) {
 			status.Active = value
 		case "SubState":
 			status.Sub = value
+		case "Type":
+			status.kind = value
+		case "Result":
+			status.result = value
 		}
 	}
 	if status.Active == "" {
@@ -146,7 +152,11 @@ func (r statusReport) text() string {
 		fmt.Fprintf(&out, "Interface      %s\nProxy          %s (%s)\n", r.Interface, r.Backend, r.Mode)
 	}
 	for _, service := range r.Services {
-		fmt.Fprintf(&out, "Service        %s %s (%s)\n", service.Unit, service.Active, service.Sub)
+		state := fmt.Sprintf("%s (%s)", service.Active, service.Sub)
+		if service.kind == "oneshot" && service.result == "success" && service.Active == "active" && service.Sub == "exited" {
+			state = "启动任务已完成"
+		}
+		fmt.Fprintf(&out, "Service        %s %s\n", service.Unit, state)
 	}
 	if r.GuardVerified {
 		fmt.Fprintln(&out, "Guard          nftables and TCX verified")

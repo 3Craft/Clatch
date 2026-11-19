@@ -22,6 +22,32 @@ func TestInspectionHelp(t *testing.T) {
 	}
 }
 
+func TestStatusServiceTextAndJSON(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, result, active, sub, text string
+	}{
+		{"completed oneshot", "oneshot", "success", "active", "exited", "启动任务已完成"},
+		{"failed oneshot", "oneshot", "exit-code", "failed", "failed", "failed (failed)"},
+		{"stopped oneshot", "oneshot", "success", "inactive", "dead", "inactive (dead)"},
+		{"exited non-oneshot", "simple", "success", "active", "exited", "active (exited)"},
+		{"running service", "simple", "success", "active", "running", "active (running)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := serviceStatus{Unit: "test.service", Active: test.active, Sub: test.sub,
+				kind: test.kind, result: test.result}
+			report := statusReport{Services: []serviceStatus{service}}
+			if text := report.text(); !strings.Contains(text, "test.service "+test.text+"\n") {
+				t.Fatalf("service text output = %q", text)
+			}
+			raw, err := json.Marshal(service)
+			want := `{"unit":"test.service","active":"` + test.active + `","substate":"` + test.sub + `"}`
+			if err != nil || string(raw) != want {
+				t.Fatalf("service JSON = %s, want %s (error: %v)", raw, want, err)
+			}
+		})
+	}
+}
+
 func TestInspectionFailureOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing.json")
 	for _, command := range [][]string{
