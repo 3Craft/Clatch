@@ -129,7 +129,11 @@ and configure its capture and DNS separately.
 
 Configure the logical uplink and its physical Ethernet device in
 `deploy/openwrt/openwrt.example.json`. Use the example policy format for your
-approved IPv4 destinations. Install the release binary as `/usr/sbin/clatch`,
+approved IPv4 destinations. Use `unmanaged_egress_devices` for specific
+interfaces whose egress remains under the existing firewall, such as a primary
+uplink during a guarded backup uplink trial. Traffic from these interfaces
+still passes through the protected LAN source checks when routed to a guarded
+uplink. Install the release binary as `/usr/sbin/clatch`,
 the configuration as `/etc/clatch/openwrt.json`, and the policy at the path
 given in that configuration. Place `clatch_static.sh` in `/lib/netifd/proto/`.
 Generate `clatch_dhcp.sh` from the installed OpenWrt DHCP handler and install

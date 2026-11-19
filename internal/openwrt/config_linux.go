@@ -22,12 +22,13 @@ type Uplink struct {
 }
 
 type Config struct {
-	Schema      int      `json:"schema"`
-	LANDevices  []string `json:"lan_devices"`
-	LAN         []string `json:"lan"`
-	Uplinks     []Uplink `json:"uplinks"`
-	Policy      string   `json:"policy"`
-	ProxyDevice string   `json:"proxy_device,omitempty"`
+	Schema                 int      `json:"schema"`
+	LANDevices             []string `json:"lan_devices"`
+	LAN                    []string `json:"lan"`
+	Uplinks                []Uplink `json:"uplinks"`
+	Policy                 string   `json:"policy"`
+	ProxyDevice            string   `json:"proxy_device,omitempty"`
+	UnmanagedEgressDevices []string `json:"unmanaged_egress_devices,omitempty"`
 
 	direct []netip.Prefix
 	lan4   string
@@ -74,6 +75,12 @@ func ReadConfig(path string) (Config, error) {
 		}
 		seen[uplink.Device] = true
 		networks = append(networks, uplink.Network)
+	}
+	for _, device := range config.UnmanagedEgressDevices {
+		if !policy.ValidInterface(device) || seen[device] {
+			return config, fmt.Errorf("invalid or repeated unmanaged egress device %q", device)
+		}
+		seen[device] = true
 	}
 	prefixes, err := policy.Parse(config.LAN)
 	if err != nil {

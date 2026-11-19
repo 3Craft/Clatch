@@ -234,6 +234,7 @@ func (c Config) rules() string {
 		wan = append(wan, u.Device)
 	}
 	local := append([]string{"lo"}, c.LANDevices...)
+	local = append(local, c.UnmanagedEgressDevices...)
 	if c.ProxyDevice != "" {
 		local = append(local, c.ProxyDevice)
 	}
