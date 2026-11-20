@@ -21,12 +21,12 @@ import (
 )
 
 const (
-	binaryPath      = "/usr/local/sbin/clatch"
-	legacyGuardPath = "/usr/local/sbin/gateway-guard"
-	configPath      = "/etc/jdn-gateway/config.json"
-	guardUnit       = "jdn-gateway-guard.service"
-	hookPath        = "/usr/local/libexec/v2raya-lan-dns-hook.py"
-	migrationLock   = "/run/lock/clatch-migration.lock"
+	binaryPath       = "/usr/local/sbin/clatch"
+	legacyGuardPath  = "/usr/local/sbin/gateway-guard"
+	legacyConfigPath = "/etc/jdn-gateway/config.json"
+	legacyGuardUnit  = "jdn-gateway-guard.service"
+	hookPath         = "/usr/local/libexec/v2raya-lan-dns-hook.py"
+	migrationLock    = "/run/lock/clatch-migration.lock"
 )
 
 type fileState struct {
@@ -78,7 +78,7 @@ func buildPlan() (plan, error) {
 	if err := verifyDebian13(); err != nil {
 		return p, err
 	}
-	config, err := policy.ReadConfig(configPath)
+	config, err := policy.ReadConfig(legacyConfigPath)
 	if err != nil {
 		return p, err
 	}
@@ -117,7 +117,7 @@ func buildPlan() (plan, error) {
 	if err != nil {
 		return p, err
 	}
-	for _, unit := range []string{guardUnit, "nftables.service", "networking.service"} {
+	for _, unit := range []string{legacyGuardUnit, "nftables.service", "networking.service"} {
 		if _, err := system.Command("", "systemctl", "is-active", "--quiet", unit); err != nil {
 			return p, err
 		}
@@ -165,21 +165,21 @@ func buildPlan() (plan, error) {
 			return p, fmt.Errorf("an existing rollback ABI record already owns %s", path)
 		}
 	}
-	if err := p.add(legacyGuardPath, wrapper("legacy-guard"), 0755, true); err != nil {
+	if err := p.add(legacyGuardPath, wrapper("legacy-guard --config "+legacyConfigPath), 0755, true); err != nil {
 		return p, err
 	}
 	for _, diagnostic := range []struct{ path, kind string }{
 		{"/usr/local/libexec/traceroute-direct", "traceroute"}, {"/usr/local/bin/ping", "ping"},
 	} {
-		if err := p.add(diagnostic.path, wrapper("diagnostic "+diagnostic.kind+" "+configPath), 0755, diagnostic.kind != "ping"); err != nil {
+		if err := p.add(diagnostic.path, wrapper("diagnostic "+diagnostic.kind+" "+legacyConfigPath), 0755, diagnostic.kind != "ping"); err != nil {
 			return p, err
 		}
 	}
 	if config.IsNative() {
-		if err := p.add(hookPath, wrapper("native hook"), 0755, true); err != nil {
+		if err := p.add(hookPath, wrapper("native hook --config "+legacyConfigPath), 0755, true); err != nil {
 			return p, err
 		}
-		if err := p.add("/usr/local/sbin/gateway-whitelist", wrapper("whitelist"), 0755, true); err != nil {
+		if err := p.add("/usr/local/sbin/gateway-whitelist", wrapper("whitelist --config "+legacyConfigPath), 0755, true); err != nil {
 			return p, err
 		}
 	} else if err := p.coreUnit(); err != nil {
@@ -239,12 +239,12 @@ func (p *plan) coreUnit() error {
 			continue
 		}
 		opts := strings.Fields(m[5])
-		if len(opts) != 0 && !(len(opts) == 2 && opts[0] == "--config" && opts[1] == configPath) {
+		if len(opts) != 0 && !(len(opts) == 2 && opts[0] == "--config" && opts[1] == legacyConfigPath) {
 			return fmt.Errorf("core interception uses unrecognized arguments in %s", path)
 		}
 		switch {
 		case m[1] == "ExecStartPre" && m[4] == "start":
-			out[i] = m[1] + "=" + m[2] + binaryPath + " " + kind + " start " + configPath
+			out[i] = m[1] + "=" + m[2] + binaryPath + " " + kind + " start " + legacyConfigPath
 			start++
 		case m[1] == "ExecStopPost" && m[4] == "stop":
 			out[i] = m[1] + "=" + m[2] + binaryPath + " " + kind + " stop"
@@ -268,7 +268,7 @@ func Plan() (map[string]any, error) {
 		paths = append(paths, item.Path)
 	}
 	return map[string]any{
-		"configuration": configPath, "backend": p.Service, "interface": p.Config.Interface,
+		"configuration": legacyConfigPath, "backend": p.Service, "interface": p.Config.Interface,
 		"settings_abi_bytes": p.ABI, "network_sha256": p.PolicySHA, "files": paths,
 	}, nil
 }

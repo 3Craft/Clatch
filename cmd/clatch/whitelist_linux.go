@@ -13,12 +13,13 @@ import (
 	"strings"
 
 	"clatch-gateway/internal/gateway"
+	"clatch-gateway/internal/policy"
 )
 
 func runWhitelist(args []string) (any, error) {
 	flags := flag.NewFlagSet("whitelist", flag.ContinueOnError)
 	req := gateway.WhitelistRequest{}
-	flags.StringVar(&req.Config, "config", "/etc/jdn-gateway/config.json", "gateway config")
+	flags.StringVar(&req.Config, "config", policy.DefaultConfigPath, "gateway config")
 	flags.StringVar(&req.Backups, "backups", "/root/backups/gateway", "private backup root")
 	flags.StringVar(&req.GeoIP, "geoip", "", "explicit GeoIP path")
 	flags.StringVar(&req.ConfDir, "confdir", "", "v2rayA configuration directory")

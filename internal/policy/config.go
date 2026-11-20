@@ -14,6 +14,11 @@ import (
 	"clatch-gateway/internal/guard"
 )
 
+const (
+	DefaultConfigDir  = "/etc/clatch"
+	DefaultConfigPath = DefaultConfigDir + "/config.json"
+)
+
 var (
 	interfaceName = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,15}$`)
 	serviceName   = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.@-]*$`)

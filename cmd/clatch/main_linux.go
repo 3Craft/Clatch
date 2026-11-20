@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -15,60 +16,58 @@ import (
 	"clatch-gateway/internal/guard"
 )
 
-const usage = `Usage: clatch config check CONFIG
-       clatch nft render CONFIG [TUN_IFINDEX]
-       clatch guard ensure CONFIG IFACE
-       clatch guard verify CONFIG
-       clatch tproxy start CONFIG [PORT]
-       clatch tproxy stop
-       clatch managed-tun start CONFIG
-       clatch managed-tun stop
-       clatch native inspect|bind|unbind CONFIG
-       clatch native hook --stage STAGE [--config CONFIG]
-       clatch diagnostic ping|traceroute CONFIG [options]
-       clatch health --dns ADDRESS --expected-exit IP [options]
-       clatch openwrt prepare|verify CONFIG LOGICAL DEVICE
-       clatch openwrt tproxy-start CONFIG PORT | tproxy-stop
-       clatch install plan PROFILE | apply PROFILE BACKUP | confirm|rollback BACKUP
-       clatch migrate plan | apply|confirm|rollback BACKUP
-       clatch whitelist [--config CONFIG] show|add|remove|import|refresh|restore|recover
-       clatch policy stage CONFIG DIRECTORY SOURCE
-       clatch policy commit|rollback CONFIG DIRECTORY
-       clatch bpf COMMAND [arguments]
-  attach|attach-wan IFACE OBJECT PINS POLICY UID 0 [TUN]
-  prepare OBJECT PINS POLICY UID 0 [TUN]
-  replace IFACE ACTIVE_PINS NEXT_PINS
-  prune IFACE ACTIVE_PINS OLD_PINS
-  verify|verify-wan IFACE PINS
-  policy PINS POLICY
-  stats PINS
-  dump PINS
-  detach|detach-wan IFACE PINS
-
-Use - as OBJECT to load the eBPF object built into the release binary.`
-
-var errUsage = errors.New(usage)
+var errUsage = errors.New("invalid arguments")
 
 func main() {
-	args := os.Args[1:]
-	if len(args) >= 3 && args[0] == "diagnostic" {
+	os.Exit(execute(os.Args[1:], os.Stdout, os.Stderr))
+}
+
+func execute(args []string, stdout, stderr io.Writer) int {
+	if len(args) >= 3 && args[0] == "diagnostic" &&
+		(args[1] == "ping" || args[1] == "traceroute") && args[2] != "--help" && args[2] != "-h" {
 		code, err := diagnostic.Run(args[1], args[2], args[3:])
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "clatch: %v\n", err)
+			fmt.Fprintf(stderr, "clatch: %v\n", err)
 		}
-		os.Exit(code)
+		return code
+	}
+	if topic, requested := helpTopic(args); requested {
+		if help := commandHelp(topic); help != "" {
+			fmt.Fprint(stdout, help)
+			return 0
+		}
+		fmt.Fprintf(stderr, "clatch: unknown command %q. Run clatch --help.\n", topic)
+		return 2
 	}
 	result, err := run(args)
-	if err == nil && result != nil {
-		err = json.NewEncoder(os.Stdout).Encode(result)
+	switch output := result.(type) {
+	case inspection:
+		var writeErr error
+		if output.text != "" {
+			_, writeErr = io.WriteString(stdout, output.text)
+		} else {
+			writeErr = json.NewEncoder(stdout).Encode(output.value)
+		}
+		err = errors.Join(err, writeErr)
+	default:
+		if err == nil && result != nil {
+			err = json.NewEncoder(stdout).Encode(result)
+		}
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "clatch: %v\n", err)
 		if errors.Is(err, errUsage) {
-			os.Exit(2)
+			topic := topicFor(args)
+			if commandHelp(topic) == "" {
+				fmt.Fprintf(stderr, "clatch: unknown command %q. Run clatch --help.\n", topic)
+			} else {
+				fmt.Fprintf(stderr, "clatch: %v. Run clatch %s --help.\n", err, topic)
+			}
+			return 2
 		}
-		os.Exit(1)
+		fmt.Fprintf(stderr, "clatch: %v\n", err)
+		return 1
 	}
+	return 0
 }
 
 func run(args []string) (any, error) {
@@ -79,6 +78,8 @@ func run(args []string) (any, error) {
 		return nil, errUsage
 	}
 	switch args[0] {
+	case "status":
+		return runStatus(args[1:])
 	case "bpf":
 		return runBPF(args[1:])
 	case "config":

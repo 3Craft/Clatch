@@ -4,6 +4,7 @@ package health
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"clatch-gateway/internal/system"
@@ -22,12 +24,13 @@ import (
 )
 
 type Request struct {
-	Resolver  netip.AddrPort
-	DirectURL string
-	ProxyURL  string
-	Exits     []netip.Addr
-	EmptyAAAA bool
-	Marks     bool
+	ConfigPath string
+	Resolver   netip.AddrPort
+	DirectURL  string
+	ProxyURL   string
+	Exits      []netip.Addr
+	EmptyAAAA  bool
+	Marks      bool
 }
 
 type dnsCheck struct {
@@ -36,28 +39,47 @@ type dnsCheck struct {
 	Transport     string `json:"transport"`
 	Answers       int    `json:"answers"`
 	ExpectedEmpty bool   `json:"expected_empty"`
+	State         string `json:"state"`
+	Error         string `json:"error,omitempty"`
 }
 
 type httpCheck struct {
-	Domain string     `json:"domain"`
-	Role   string     `json:"role"`
-	Status int        `json:"status"`
-	Peer   netip.Addr `json:"peer"`
-	Exit   netip.Addr `json:"exit_ip,omitzero"`
-	Marks  []uint32   `json:"conntrack_marks,omitempty"`
+	Domain           string     `json:"domain"`
+	Role             string     `json:"role"`
+	Status           int        `json:"status"`
+	Peer             netip.Addr `json:"peer"`
+	Exit             netip.Addr `json:"exit_ip,omitzero"`
+	Marks            []uint32   `json:"conntrack_marks,omitempty"`
+	ReplyDestination netip.Addr `json:"conntrack_reply_dst,omitzero"`
+	State            string     `json:"state"`
+	Error            string     `json:"error,omitempty"`
 }
 
 type Report struct {
-	Time   time.Time   `json:"time"`
-	DNS    []dnsCheck  `json:"dns"`
-	HTTP   []httpCheck `json:"http"`
-	Passed bool        `json:"passed"`
+	Time           time.Time      `json:"time"`
+	ConfigPath     string         `json:"config,omitempty"`
+	Resolver       netip.AddrPort `json:"resolver,omitzero"`
+	ExpectedExits  []netip.Addr   `json:"expected_exits,omitempty"`
+	DNS            []dnsCheck     `json:"dns"`
+	HTTP           []httpCheck    `json:"http"`
+	ConntrackError string         `json:"conntrack_error,omitempty"`
+	Error          string         `json:"error,omitempty"`
+	Passed         bool           `json:"passed"`
 }
 
 func Check(ctx context.Context, request Request) (Report, error) {
-	report := Report{Time: time.Now().UTC()}
-	if len(request.Exits) == 0 {
-		return report, fmt.Errorf("at least one approved proxy exit is required")
+	report := Report{Time: time.Now().UTC(), ConfigPath: request.ConfigPath,
+		Resolver: request.Resolver, ExpectedExits: request.Exits}
+	var firstError string
+	var nativeTUN *nativeTUNCheck
+	if request.Marks {
+		var err error
+		nativeTUN, err = prepareNativeTUNCheck(request.ConfigPath)
+		if err != nil {
+			report.ConntrackError = err.Error()
+			firstError = "prepare conntrack check: " + report.ConntrackError
+			request.Marks = false
+		}
 	}
 	for _, probe := range []struct {
 		domain string
@@ -68,30 +90,73 @@ func Check(ctx context.Context, request Request) (Report, error) {
 	} {
 		for _, transport := range []string{"udp", "tcp"} {
 			empty := request.EmptyAAAA && probe.kind == dnsmessage.TypeAAAA
-			answers, err := DNS(ctx, request.Resolver, transport+"4", probe.domain, probe.kind, empty)
-			if err != nil {
-				return report, fmt.Errorf("DNS %s %s over %s: %w", probe.domain, probe.kind, transport, err)
-			}
-			report.DNS = append(report.DNS, dnsCheck{probe.domain, uint16(probe.kind), transport, answers, empty})
+			report.DNS = append(report.DNS, dnsCheck{
+				Domain: probe.domain, Kind: uint16(probe.kind), Transport: transport, ExpectedEmpty: empty,
+			})
 		}
 	}
-	for _, probe := range []struct {
+	probes := []struct {
 		url  string
 		role string
 		mark uint32
-	}{{request.DirectURL, "direct", 0}, {request.ProxyURL, "proxy", 64}} {
-		result, err := inspectHTTP(ctx, request, probe.url, probe.role, probe.mark)
-		if err != nil {
-			return report, fmt.Errorf("%s application probe: %w", probe.role, err)
+	}{{request.DirectURL, "direct", 0}, {request.ProxyURL, "proxy", 64}}
+	report.HTTP = make([]httpCheck, len(probes))
+	const missingDNS = "no DNS endpoint configured; set dns in health.json or pass --dns"
+	var group sync.WaitGroup
+	for i := range report.DNS {
+		check := &report.DNS[i]
+		if !request.Resolver.IsValid() {
+			check.State, check.Error = "skipped", missingDNS
+			continue
 		}
-		report.HTTP = append(report.HTTP, result)
+		group.Go(func() {
+			answers, err := DNS(ctx, request.Resolver, check.Transport+"4", check.Domain, dnsmessage.Type(check.Kind), check.ExpectedEmpty)
+			check.Answers = answers
+			check.State, check.Error = checkResult(err)
+		})
 	}
-	report.Passed = true
+	for i, probe := range probes {
+		switch {
+		case !request.Resolver.IsValid():
+			report.HTTP[i] = httpCheck{Role: probe.role, State: "skipped", Error: missingDNS}
+		case probe.role == "proxy" && len(request.Exits) == 0:
+			report.HTTP[i] = httpCheck{Role: probe.role, State: "skipped",
+				Error: "no expected proxy exit configured; set expected_exits in health.json or pass --expected-exit"}
+		default:
+			group.Go(func() {
+				result, err := inspectHTTP(ctx, request, probe.url, probe.role, probe.mark, nativeTUN)
+				result.State, result.Error = checkResult(err)
+				report.HTTP[i] = result
+			})
+		}
+	}
+	group.Wait()
+	for _, check := range report.DNS {
+		if firstError == "" && check.Error != "" {
+			firstError = fmt.Sprintf("DNS %s %s over %s: %s", check.Domain, dnsmessage.Type(check.Kind), check.Transport, check.Error)
+		}
+	}
+	for _, check := range report.HTTP {
+		if firstError == "" && check.Error != "" {
+			firstError = fmt.Sprintf("%s application probe: %s", check.Role, check.Error)
+		}
+	}
+	report.Error, report.Passed = firstError, firstError == ""
+	if !report.Passed {
+		return report, errors.New(firstError)
+	}
 	return report, nil
 }
 
-func inspectHTTP(ctx context.Context, request Request, url, role string, mark uint32) (httpCheck, error) {
-	var check httpCheck
+func checkResult(err error) (string, string) {
+	if err != nil {
+		return "failed", err.Error()
+	}
+	return "passed", ""
+}
+
+func inspectHTTP(ctx context.Context, request Request, url, role string, mark uint32, nativeTUN *nativeTUNCheck) (httpCheck, error) {
+	check := httpCheck{Role: role}
 	dialer := net.Dialer{Resolver: &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, transport, _ string) (net.Conn, error) {
@@ -104,6 +169,7 @@ func inspectHTTP(ctx context.Context, request Request, url, role string, mark ui
 	transport.Proxy = nil
 	transport.Protocols = new(http.Protocols)
 	transport.Protocols.SetHTTP1(true)
+	transport.Protocols.SetHTTP2(true)
 	transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, "tcp4", address)
 	}
@@ -118,30 +184,33 @@ func inspectHTTP(ctx context.Context, request Request, url, role string, mark ui
 	if err != nil {
 		return check, err
 	}
+	check.Domain = httpRequest.URL.Hostname()
 	response, err := client.Do(httpRequest)
 	if err != nil {
 		return check, err
 	}
 	defer response.Body.Close()
+	check.Status, check.Peer = response.StatusCode, remote.Addr().Unmap()
 	if response.StatusCode != http.StatusOK || !remote.IsValid() {
 		return check, fmt.Errorf("unexpected HTTP status %d or missing peer", response.StatusCode)
 	}
-	check = httpCheck{Domain: httpRequest.URL.Hostname(), Role: role, Status: response.StatusCode, Peer: remote.Addr().Unmap()}
+	var exitErr error
 	if role == "proxy" {
 		body, err := io.ReadAll(io.LimitReader(response.Body, 128*1024))
 		if err != nil {
 			return check, err
 		}
-		exit := parseExit(string(body))
-		if !slices.Contains(request.Exits, exit) {
-			return check, fmt.Errorf("exit address %s is outside the expected list", exit)
+		check.Exit = parseExit(string(body))
+		if !slices.Contains(request.Exits, check.Exit) {
+			exitErr = fmt.Errorf("exit address %s is outside the expected list", check.Exit)
 		}
-		check.Exit = exit
 	}
-	if request.Marks {
+	if nativeTUN != nil {
+		err = nativeTUN.verify(&check, local, remote)
+	} else if request.Marks {
 		check.Marks, err = inspectMarks(local, remote, mark)
 	}
-	return check, err
+	return check, errors.Join(exitErr, err)
 }
 
 var legacyExit = regexp.MustCompile(`\bIP:\s*([0-9.]+)`)
@@ -157,9 +226,10 @@ func parseExit(body string) netip.Addr {
 	return netip.Addr{}
 }
 
-func inspectMarks(local, remote netip.AddrPort, expected uint32) ([]uint32, error) {
-	raw, err := system.Command("", "conntrack", "-L", "-p", "tcp", "-s", local.Addr().Unmap().String(),
-		"-d", remote.Addr().Unmap().String(), "--sport", strconv.Itoa(int(local.Port())), "--dport", strconv.Itoa(int(remote.Port())))
+func inspectMarks(local, remote netip.AddrPort, expected uint32, filters ...string) ([]uint32, error) {
+	args := []string{"-L", "-p", "tcp", "-s", local.Addr().Unmap().String(), "-d", remote.Addr().Unmap().String(),
+		"--sport", strconv.Itoa(int(local.Port())), "--dport", strconv.Itoa(int(remote.Port()))}
+	raw, err := system.Command("", "conntrack", append(args, filters...)...)
 	if err != nil {
 		return nil, err
 	}

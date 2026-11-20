@@ -49,7 +49,7 @@ use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
   command previews edits, backs up SQLite and supports recovery and restore.
 - Run Debian ping and traceroute through the restricted diagnostic account.
 - Probe UDP/TCP DNS, direct and proxied application requests, the expected
-  proxy exit address, and optional conntrack marks with `clatch health`.
+  proxy exit address, and optional conntrack verification with `clatch health`.
 - Install a new Debian 13 guard from a static ifupdown profile, with a
   recovery executable and systemd rollback timer in the installation backup.
 - Migrate an existing Debian 13 gateway with its current configuration,
@@ -66,7 +66,9 @@ the proxy configuration and CIDR source in
 `deploy/debian/standalone.example.json`. A profile without `proxy` reads the
 prepared v2rayA mode and whitelist from its SQLite and GeoIP data. Set
 `native_mode` to `tproxy` or `tun` to require a specific mode. The installer
-uses the existing proxy credentials and service enablement.
+uses the existing proxy credentials and service enablement. It writes the
+gateway configuration and generated policy to `/etc/clatch/` and enables
+`clatch-guard.service`.
 
 ```sh
 ./clatch-linux-amd64 install plan /root/gateway-profile.json
@@ -85,11 +87,15 @@ holds forwarding disabled.
 /root/clatch-install/clatch-recover install rollback /root/clatch-install
 ```
 
-## Migrate an existing Debian gateway
+## Adopt a legacy Python gateway on Debian
 
 Run the commands on a disposable clone first. Keep the backup on a persistent
 local filesystem and use a new absolute path. The plan checks the running
-legacy guard, installed interception mode and approved policy.
+legacy guard, installed interception mode and approved policy. This adoption
+keeps the existing boot wiring and configuration in `/etc/jdn-gateway/`.
+For that layout, pass `--config /etc/jdn-gateway/config.json` to
+`clatch guard verify`, `clatch config check` or `clatch health`. Use
+`systemctl status jdn-gateway-guard.service` to check the legacy unit.
 
 ```sh
 ./clatch-linux-amd64 migrate plan
@@ -110,14 +116,50 @@ v2rayA. Verify the legacy guard and DNS, then rerun the migration plan.
 After migration, keep that approved copy available while using
 `gateway-whitelist refresh --apply` to approve the new GeoIP data.
 
-Run the application health check from a host whose traffic follows the
-gateway under test. Use an expected exit address for that deployment.
-Add `--expect-empty-aaaa` for an IPv4-only DNS policy. `--conntrack` checks
-the socket marks when running on the gateway.
+## Inspect a Debian gateway
+
+`clatch status` shows local service, guard, policy, tunnel, and deployment
+state. It can show a degraded gateway or a pending change without sending
+external probes. Add `--json` for automation.
 
 ```sh
-clatch health --dns 192.0.2.1 --expected-exit 203.0.113.10
+clatch status
+clatch guard verify
+clatch config check
+clatch health
 ```
+
+These commands default to `/etc/clatch/config.json`. Use `--config` for a
+different gateway file. Health checks use the sibling `health.json` for probe
+defaults. An example for `/etc/clatch/health.json` is below.
+
+```json
+{
+  "expected_exits": ["203.0.113.10"],
+  "conntrack": true
+}
+```
+
+Set `expected_exits` to the approved proxy exits for that gateway. With one
+local IPv4 address in the gateway config, health uses it as the DNS endpoint
+on port 53. Set `dns` in `health.json` to choose another DNS endpoint. Set
+`expect_empty_aaaa` when DNS policy requires a successful empty AAAA reply.
+Explicit probe options override the file.
+
+Run the health probes from a host whose traffic follows the gateway under
+test. On the gateway, `--conntrack` checks the tracked HTTPS flows. For native
+v2rayA TUN it uses the installed policy, route lookup, and conntrack reply
+tuple. Both native TUN flows have connection mark zero.
+
+```sh
+clatch health --json --dns 192.0.2.1 --expected-exit 203.0.113.10
+```
+
+The check commands write JSON on success and failure. Health reports include
+passed, failed, and skipped probes. Exit code 0 means the check succeeded, 1
+means a check or operation failed, and 2 means the arguments were invalid.
+`status` returns 0 when it collects a report, including a degraded report.
+Use `clatch --help` or `clatch COMMAND --help` to discover options.
 
 ## OpenWrt
 
@@ -173,8 +215,8 @@ hardware targets and failure cases.
 ## Inspect a compatible snapshot
 
 ```sh
-./dist/clatch-linux-amd64 config check /etc/jdn-gateway/config.json
-./dist/clatch-linux-amd64 nft render /etc/jdn-gateway/config.json
+./dist/clatch-linux-amd64 config check /etc/clatch/config.json
+./dist/clatch-linux-amd64 nft render /etc/clatch/config.json
 ```
 
 The `bpf` subcommands operate on explicit interfaces and bpffs paths. Passing

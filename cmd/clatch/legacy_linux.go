@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 
 	"clatch-gateway/internal/gateway"
+	"clatch-gateway/internal/policy"
 )
 
 func runLegacyGuard(args []string) (any, error) {
-	options := map[string]string{"--config": "/etc/jdn-gateway/config.json"}
+	options := map[string]string{"--config": policy.DefaultConfigPath}
 	action := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
