@@ -21,6 +21,11 @@ jobs:
       - name: Run unit tests (Linux)
         run: go test -race -v ./...
 
+      - name: Install BPF build headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libbpf-dev linux-libc-dev
+
       - name: Build static Linux binaries (amd64 & arm64)
         run: |
           make -j2 VERSION=ci COMMIT="${GITHUB_SHA::7}"
