@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "name": "debian-v2raya-gateway",
+  "interface": "ens18",
+  "address": "192.0.2.10/24",
+  "gateway": "192.0.2.1",
+  "lan": ["192.0.2.0/24"],
+  "public_ipv6": false,
+  "native_mode": "tun"
+}

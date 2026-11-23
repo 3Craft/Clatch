@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Run Go vet
+        run: go vet ./...
+
+      - name: Run unit tests (Linux)
+        run: go test -race -v ./...
+
+      - name: Build static Linux binaries (amd64 & arm64)
+        run: |
+          make -j2 VERSION=ci COMMIT="${GITHUB_SHA::7}"
+          ./dist/clatch-linux-amd64 version --json
+          ./dist/clatch-linux-amd64 help --json > /dev/null
+          ./dist/clatch-linux-amd64 schema --list --json > /dev/null
