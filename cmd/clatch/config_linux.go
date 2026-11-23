@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"clatch-gateway/internal/policy"
 )
@@ -17,7 +18,39 @@ func runConfig(args []string) (any, error) {
 		return nil, err
 	}
 	result, err := checkConfig(options.config)
-	return checkReport(options, result, err)
+	return checkReport(options, result, formatConfigCheck(options.config, result, err), err)
+}
+
+func formatConfigCheck(path string, result map[string]any, err error) string {
+	var out strings.Builder
+	if err == nil {
+		fmt.Fprintf(&out, "Configuration is valid\n")
+	} else {
+		fmt.Fprintf(&out, "Configuration check failed\n")
+	}
+	fmt.Fprintf(&out, "Configuration  %s\n", path)
+	if iface, ok := result["interface"].(string); ok && iface != "" {
+		fmt.Fprintf(&out, "Interface      %s\n", iface)
+	}
+	if backend, ok := result["backend"].(string); ok && backend != "" {
+		mode, _ := result["mode"].(string)
+		fmt.Fprintf(&out, "Proxy          %s (%s)\n", backend, mode)
+	}
+	if networks, ok := result["networks"].(int); ok {
+		entries, _ := result["policy_entries"].(int)
+		fmt.Fprintf(&out, "Policy         %d direct networks (%d / 20000 TCX entries)\n", networks, entries)
+	}
+	if sha, ok := result["network_sha256"].(string); ok && sha != "" {
+		short := sha
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		fmt.Fprintf(&out, "Policy SHA     %s\n", short)
+	}
+	if err != nil {
+		fmt.Fprintf(&out, "Error          %v\n", err)
+	}
+	return out.String()
 }
 
 func checkConfig(path string) (map[string]any, error) {

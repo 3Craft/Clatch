@@ -1,10 +1,13 @@
 GO ?= go
 CLANG ?= clang
 CC ?= cc
+VERSION ?= dev
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || true)
 BPF_IMAGE ?= clatch-bpf-builder
 BPF_OBJECT := internal/guard/gateway_bpfel.o
 BPF_HEADERS ?= /usr/include/$(shell $(CC) -dumpmachine)
 BINARIES := dist/clatch-linux-amd64 dist/clatch-linux-arm64
+LDFLAGS := -s -w -X main.version=$(VERSION) -X main.commit=$(COMMIT)
 
 .PHONY: all bpf bpf-container test clean
 all: $(BINARIES)
@@ -20,7 +23,7 @@ bpf-container:
 
 dist/clatch-linux-%: $(BPF_OBJECT) $(shell find cmd internal -name '*.go') go.mod go.sum
 	mkdir -p dist
-	CGO_ENABLED=0 GOOS=linux GOARCH=$* $(GO) build -tags embedded_bpf -trimpath -ldflags='-s -w' -o $@ ./cmd/clatch
+	CGO_ENABLED=0 GOOS=linux GOARCH=$* $(GO) build -tags embedded_bpf -trimpath -ldflags='$(LDFLAGS)' -o $@ ./cmd/clatch
 
 test:
 	$(GO) test ./...

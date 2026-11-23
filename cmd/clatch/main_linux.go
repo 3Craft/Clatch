@@ -31,43 +31,84 @@ func execute(args []string, stdout, stderr io.Writer) int {
 		}
 		return code
 	}
+	if len(args) >= 1 && (args[0] == "--version" || args[0] == "-v") {
+		args = append([]string{"version"}, args[1:]...)
+	}
+	jsonRequested := wantJSON(args)
 	if topic, requested := helpTopic(args); requested {
+		if jsonRequested {
+			if manifest, ok := buildHelpManifest(topic); ok {
+				if err := json.NewEncoder(stdout).Encode(manifest); err != nil {
+					fmt.Fprintf(stderr, "clatch: %v\n", err)
+					return 1
+				}
+				return 0
+			}
+		}
 		if help := commandHelp(topic); help != "" {
 			fmt.Fprint(stdout, help)
 			return 0
 		}
-		fmt.Fprintf(stderr, "clatch: unknown command %q. Run clatch --help.\n", topic)
+		err := usageError("unknown command %q", topic)
+		writeError(stdout, stderr, topic, err, jsonRequested, false)
 		return 2
 	}
 	result, err := run(args)
+	wroteStdout := false
 	switch output := result.(type) {
 	case inspection:
 		var writeErr error
-		if output.text != "" {
+		if !jsonRequested && output.text != "" {
 			_, writeErr = io.WriteString(stdout, output.text)
-		} else {
+			wroteStdout = true
+		} else if output.value != nil {
 			writeErr = json.NewEncoder(stdout).Encode(output.value)
+			wroteStdout = true
+		} else if output.text != "" {
+			_, writeErr = io.WriteString(stdout, output.text)
+			wroteStdout = true
 		}
 		err = errors.Join(err, writeErr)
 	default:
 		if err == nil && result != nil {
 			err = json.NewEncoder(stdout).Encode(result)
+			wroteStdout = true
 		}
 	}
 	if err != nil {
+		topic := topicFor(args)
+		writeError(stdout, stderr, topic, err, jsonRequested, wroteStdout)
 		if errors.Is(err, errUsage) {
-			topic := topicFor(args)
-			if commandHelp(topic) == "" {
-				fmt.Fprintf(stderr, "clatch: unknown command %q. Run clatch --help.\n", topic)
-			} else {
-				fmt.Fprintf(stderr, "clatch: %v. Run clatch %s --help.\n", err, topic)
-			}
 			return 2
 		}
-		fmt.Fprintf(stderr, "clatch: %v\n", err)
 		return 1
 	}
 	return 0
+}
+
+func writeError(stdout, stderr io.Writer, topic string, err error, jsonRequested, wroteStdout bool) {
+	detail := classifyError(err, topic)
+	if jsonRequested && !wroteStdout {
+		_ = json.NewEncoder(stdout).Encode(jsonErrorEnvelope{
+			OK:      false,
+			Passed:  false,
+			Command: topic,
+			Error:   err.Error(),
+			Detail:  detail,
+		})
+	}
+	if errors.Is(err, errUsage) {
+		if commandHelp(topic) == "" {
+			fmt.Fprintf(stderr, "clatch: unknown command %q. Run clatch --help.\n", topic)
+		} else {
+			fmt.Fprintf(stderr, "clatch: %v. Run clatch %s --help.\n", err, topic)
+		}
+		return
+	}
+	fmt.Fprintf(stderr, "clatch: %v\n", err)
+	if !jsonRequested && detail.Hint != "" {
+		fmt.Fprintf(stderr, "hint: %s\n", detail.Hint)
+	}
 }
 
 func run(args []string) (any, error) {
@@ -80,6 +121,20 @@ func run(args []string) (any, error) {
 	switch args[0] {
 	case "status":
 		return runStatus(args[1:])
+	case "health":
+		return runHealth(args[1:])
+	case "doctor":
+		return runDoctor(args[1:])
+	case "explain":
+		return runExplain(args[1:])
+	case "stats":
+		return runStats(args[1:])
+	case "init":
+		return runInit(args[1:])
+	case "schema":
+		return runSchema(args[1:])
+	case "version":
+		return runVersion(args[1:])
 	case "bpf":
 		return runBPF(args[1:])
 	case "config":
@@ -100,8 +155,6 @@ func run(args []string) (any, error) {
 		return runPolicy(args[1:])
 	case "whitelist":
 		return runWhitelist(args[1:])
-	case "health":
-		return runHealth(args[1:])
 	case "migrate":
 		return runMigration(args[1:])
 	case "install":

@@ -155,6 +155,11 @@ func CheckPolicy(dir string, expected Policy, settings Settings) (ebpf.MapID, er
 	return id, nil
 }
 
+// EmbeddedBPF reports whether the release BPF object is embedded in this binary.
+func EmbeddedBPF() bool {
+	return len(embeddedObject) > 0
+}
+
 // SettingsABI is used after live verification to preserve the rollback ABI.
 func SettingsABI(pins string) (uint32, error) {
 	settings, err := openMap(pins, "settings")

@@ -38,14 +38,27 @@ type statusReport struct {
 	Deployment    *deploy.Status               `json:"deployment,omitempty"`
 	PendingPolicy *gateway.PendingPolicyStatus `json:"pending_policy,omitempty"`
 	Issues        []string                     `json:"issues,omitempty"`
+	NextSteps     []string                     `json:"next_steps,omitempty"`
 }
 
 func runStatus(args []string) (any, error) {
-	options, err := readOptions("status", args, false)
-	if err != nil {
+	var options inspectionOptions
+	var strict bool
+	flags := options.flags("status")
+	flags.BoolVar(&strict, "strict", false, "exit non-zero unless state is healthy")
+	if err := flags.Parse(args); err != nil {
+		return nil, usageError("%v", err)
+	}
+	if flags.NArg() != 0 {
+		return nil, usageError("unexpected arguments")
+	}
+	if err := options.resolve(flags, ""); err != nil {
 		return nil, err
 	}
 	report, err := localStatus(options.config, options.explicit)
+	if err == nil && strict && report.State != "healthy" {
+		err = fmt.Errorf("gateway state is %s", report.State)
+	}
 	result := inspection{value: report}
 	if !options.json {
 		result.text = report.text()
@@ -57,11 +70,19 @@ func localStatus(path string, explicit bool) (statusReport, error) {
 	report := statusReport{Config: path, State: "unconfigured"}
 	config, err := policy.ReadConfig(path)
 	if errors.Is(err, os.ErrNotExist) && !explicit {
+		report.NextSteps = []string{
+			"clatch doctor",
+			"clatch init profile --help",
+		}
 		return report, nil
 	}
 	if err != nil {
 		report.State = "unknown"
 		report.issues("configuration", err)
+		report.NextSteps = []string{
+			fmt.Sprintf("clatch config check --config %s", path),
+			"clatch doctor",
+		}
 		return report, err
 	}
 	report.State, report.Interface = "healthy", config.Interface
@@ -105,8 +126,28 @@ func localStatus(path string, explicit bool) (statusReport, error) {
 	report.issues("policy transaction", err)
 	if len(report.Issues) > 0 {
 		report.State = "degraded"
+		report.NextSteps = []string{
+			fmt.Sprintf("clatch guard verify --config %s", path),
+			fmt.Sprintf("clatch health --config %s", path),
+		}
 	} else if report.PendingPolicy != nil || report.Deployment != nil && report.Deployment.State != "confirmed" {
 		report.State = "pending"
+		if report.Deployment != nil && report.Deployment.State != "confirmed" {
+			action := "install"
+			if report.Deployment.Kind == "migration" {
+				action = "migrate"
+			}
+			report.NextSteps = append(report.NextSteps,
+				fmt.Sprintf("clatch %s confirm %s", action, report.Deployment.Backup),
+				fmt.Sprintf("clatch %s rollback %s", action, report.Deployment.Backup),
+			)
+		}
+		if report.PendingPolicy != nil {
+			report.NextSteps = append(report.NextSteps,
+				fmt.Sprintf("clatch policy commit %s %s", path, report.PendingPolicy.Directory),
+				fmt.Sprintf("clatch policy rollback %s %s", path, report.PendingPolicy.Directory),
+			)
+		}
 	}
 	return report, nil
 }
@@ -169,7 +210,11 @@ func (r statusReport) text() string {
 		fmt.Fprintf(&out, "Tunnel         %s %s\n", r.Tunnel, state)
 	}
 	if r.PolicySHA != "" {
-		fmt.Fprintf(&out, "Policy         %s\n", r.PolicySHA[:12])
+		short := r.PolicySHA
+		if len(short) > 12 {
+			short = short[:12]
+		}
+		fmt.Fprintf(&out, "Policy         %s\n", short)
 	}
 	if r.Deployment != nil {
 		fmt.Fprintf(&out, "Deployment     %s %s\nBackup         %s\n", r.Deployment.Kind, r.Deployment.State, r.Deployment.Backup)
@@ -185,6 +230,13 @@ func (r statusReport) text() string {
 	}
 	for _, issue := range r.Issues {
 		fmt.Fprintf(&out, "Issue          %s\n", issue)
+	}
+	for i, step := range r.NextSteps {
+		if i == 0 {
+			fmt.Fprintf(&out, "Next step      %s\n", step)
+		} else {
+			fmt.Fprintf(&out, "               %s\n", step)
+		}
 	}
 	return out.String()
 }
