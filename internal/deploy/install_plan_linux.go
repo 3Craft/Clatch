@@ -3,18 +3,14 @@
 package deploy
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -34,103 +30,56 @@ const (
 	defaultPolicy  = policy.DefaultConfigDir + "/approved-policy.json"
 	defaultSource  = policy.DefaultConfigDir + "/source-policy.json"
 	defaultRules   = policy.DefaultConfigDir + "/guard.nft"
-	defaultPins    = "/sys/fs/bpf/jdn_gateway"
+	defaultPins    = "/sys/fs/bpf/clatch"
 	defaultSysctl  = "/etc/sysctl.d/99-zzzz-clatch-guard.conf"
+	traceAccount   = "clatch-trace"
 )
-
-type installProfile struct {
-	Schema      int                `json:"schema"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Interface   string             `json:"interface"`
-	Address     string             `json:"address"`
-	Gateway     string             `json:"gateway"`
-	LAN         []string           `json:"lan"`
-	PublicIPv6  bool               `json:"public_ipv6"`
-	Proxy       *policy.Proxy      `json:"proxy"`
-	NativeMode  string             `json:"native_mode"`
-	GeoIP       string             `json:"geoip"`
-	Diagnostic  *policy.Diagnostic `json:"lan_icmp_diagnostic"`
-}
 
 type installPlan struct {
 	plan
-	Profile     installProfile
-	Approval    policy.Approved
-	Port        uint16
-	NewAccount  bool
-	ProxyActive bool
-	NFTActive   bool
-	NFTEnabled  string
-}
-
-var installInterface = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,14}$`)
-
-func readInstallProfile(path string) (installProfile, error) {
-	var profile installProfile
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return profile, err
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&profile); err != nil {
-		return profile, err
-	}
-	if decoder.Decode(new(any)) != io.EOF || profile.Schema != 1 || profile.PublicIPv6 ||
-		!installInterface.MatchString(profile.Interface) || profile.Interface == "lo" {
-		return profile, fmt.Errorf("expected a schema-1 single-interface IPv4 profile")
-	}
-	address, err := netip.ParsePrefix(profile.Address)
-	upstream, gatewayErr := netip.ParseAddr(profile.Gateway)
-	if err != nil || gatewayErr != nil || !address.Addr().Is4() || !upstream.Is4() ||
-		!address.Addr().IsGlobalUnicast() || !upstream.IsGlobalUnicast() ||
-		address.Bits() == 0 || address.Addr() == upstream || !address.Contains(upstream) ||
-		!usableSubnetHost(address.Masked(), address.Addr()) || !usableSubnetHost(address.Masked(), upstream) {
-		return profile, fmt.Errorf("static address and upstream must be distinct IPv4 hosts on the connected subnet")
-	}
-	for _, entry := range profile.LAN {
-		prefix, err := netip.ParsePrefix(entry)
-		if err != nil || !prefix.Addr().Is4() || prefix.Bits() == 0 || prefix.Masked() != prefix {
-			return profile, fmt.Errorf("LAN requires explicit canonical IPv4 prefixes")
-		}
-	}
-	return profile, nil
-}
-
-func usableSubnetHost(prefix netip.Prefix, address netip.Addr) bool {
-	if prefix.Bits() >= 31 {
-		return true
-	}
-	return prefix.Contains(address) && address != prefix.Addr() && prefix.Contains(address.Next())
+	Profile      InstallProfile
+	Approval     policy.Approved
+	Port         uint16
+	NewAccount   bool
+	ProxyActive  bool
+	NFTActive    bool
+	NFTEnabled   string
+	NetworkStack string // "ifupdown" or "systemd-networkd"
 }
 
 func makeInstallPlan(path string, test bool) (installPlan, error) {
 	var p installPlan
-	if err := verifyDebian13(); err != nil {
+	if err := verifySupportedHost(); err != nil {
 		return p, err
 	}
 	var err error
-	p.Profile, err = readInstallProfile(path)
+	p.Profile, err = ReadInstallProfile(path)
 	if err != nil {
 		return p, err
 	}
-	for _, item := range []string{configPath, legacyConfigPath, legacyGuardPath, binaryPath, defaultPolicy, defaultRules,
+	for _, item := range []string{configPath, binaryPath, defaultPolicy, defaultRules,
 		defaultSource, defaultPins, defaultSysctl, filepath.Join("/etc/systemd/system", GuardUnit),
-		filepath.Join("/etc/systemd/system", legacyGuardUnit), installState, retainedSysctl, nativePinsRecord} {
+		installState, retainedSysctl, nativePinsRecord} {
 		if _, err := os.Lstat(item); !errors.Is(err, os.ErrNotExist) {
-			return p, fmt.Errorf("an existing or inaccessible gateway artifact requires review at %s", item)
+			return p, fmt.Errorf("an existing or inaccessible gateway artifact requires review at %s (use `clatch upgrade` or `clatch uninstall`)", item)
 		}
 	}
-	for _, command := range []string{"systemctl", "systemd-analyze", "ip", "tc", "nft", "sysctl", "ifup", "useradd"} {
+	for _, command := range []string{"systemctl", "systemd-analyze", "ip", "tc", "nft", "sysctl", "useradd"} {
 		if _, err := exec.LookPath(command); err != nil {
 			return p, err
 		}
 	}
-	for _, path := range []string{"/usr/bin/ping", "/usr/bin/traceroute.db"} {
-		if _, err := os.Stat(path); err != nil {
-			return p, err
+	if _, err := os.Stat("/usr/bin/ping"); err != nil {
+		return p, err
+	}
+	if _, err := os.Stat("/usr/bin/traceroute.db"); err != nil {
+		if _, err2 := os.Stat("/usr/bin/traceroute"); err2 != nil {
+			return p, fmt.Errorf("traceroute binary not found at /usr/bin/traceroute.db or /usr/bin/traceroute")
 		}
+	}
+	p.NetworkStack, err = detectNetworkStack(p.Profile)
+	if err != nil {
+		return p, err
 	}
 	uid, create, err := installDiagnosticUID()
 	if err != nil {
@@ -175,7 +124,7 @@ func makeInstallPlan(path string, test bool) (installPlan, error) {
 	if err != nil {
 		return p, err
 	}
-	if p.NFTEnabled != "enabled" && p.NFTEnabled != "disabled" && p.NFTEnabled != "enabled-runtime" {
+	if p.NFTEnabled != "" && p.NFTEnabled != "enabled" && p.NFTEnabled != "disabled" && p.NFTEnabled != "enabled-runtime" {
 		return p, fmt.Errorf("unsupported existing nftables unit enablement %q", p.NFTEnabled)
 	}
 	if err := verifyInstallNetwork(p.Config, address, p.Profile.Gateway); err != nil {
@@ -212,21 +161,50 @@ func makeInstallPlan(path string, test bool) (installPlan, error) {
 	return p, p.renderInstall()
 }
 
-func verifyDebian13() error {
-	raw, err := os.ReadFile("/etc/os-release")
+func verifySupportedHost() error {
+	if _, err := os.Stat("/run/systemd/system"); err != nil {
+		return fmt.Errorf("gateway installation requires a systemd host")
+	}
+	raw, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
 		return err
 	}
-	values := make(map[string]string)
-	for line := range strings.SplitSeq(string(raw), "\n") {
-		if key, value, ok := strings.Cut(line, "="); ok {
-			values[key] = strings.Trim(value, `"'`)
+	rel := strings.TrimSpace(string(raw))
+	parts := strings.SplitN(rel, ".", 3)
+	if len(parts) < 2 {
+		return fmt.Errorf("unrecognized Linux kernel version %q", rel)
+	}
+	maj, err1 := strconv.Atoi(parts[0])
+	minStr := parts[1]
+	for i, r := range minStr {
+		if r < '0' || r > '9' {
+			minStr = minStr[:i]
+			break
 		}
 	}
-	if values["ID"] != "debian" || values["VERSION_ID"] != "13" {
-		return fmt.Errorf("gateway installation requires Debian 13")
+	min, err2 := strconv.Atoi(minStr)
+	if err1 != nil || err2 != nil || maj < 6 || (maj == 6 && min < 6) {
+		return fmt.Errorf("gateway installation requires Linux kernel 6.6 or newer for pinned TCX (found %s)", rel)
 	}
 	return nil
+}
+
+func detectNetworkStack(profile InstallProfile) (string, error) {
+	if raw, err := os.ReadFile(interfacesPath); err == nil {
+		if _, err := exec.LookPath("ifup"); err == nil {
+			if _, parseErr := gatedInterfaces(string(raw), profile, binaryPath+" guard ensure "+configPath+" "+profile.Interface); parseErr == nil {
+				return "ifupdown", nil
+			}
+		}
+	}
+	if active, err := unitActive("systemd-networkd.service"); err == nil && active {
+		return "systemd-networkd", nil
+	}
+	if state, err := unitProperty("systemd-networkd.service", "UnitFileState"); err == nil &&
+		(state == "enabled" || state == "enabled-runtime" || state == "static") {
+		return "systemd-networkd", nil
+	}
+	return "", fmt.Errorf("supported network manager not detected: configure a matching static stanza in %s (ifupdown) or use systemd-networkd", interfacesPath)
 }
 
 func installDiagnosticUID() (uint32, bool, error) {
@@ -238,12 +216,12 @@ func installDiagnosticUID() (uint32, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
-	account, err := user.Lookup("jdn-trace")
+	account, err := user.Lookup(traceAccount)
 	if err == nil {
-		group, groupErr := user.LookupGroup("jdn-trace")
+		group, groupErr := user.LookupGroup(traceAccount)
 		uid, uidErr := strconv.ParseUint(account.Uid, 10, 32)
 		if groupErr != nil || uidErr != nil || group.Gid != account.Gid || uid == 0 || uid == overflow || uid == 65534 || uid == 0xffffffff {
-			return 0, false, fmt.Errorf("existing jdn-trace account must be an unprivileged system identity")
+			return 0, false, fmt.Errorf("existing %s account must be an unprivileged system identity", traceAccount)
 		}
 		if err := requireDedicatedDiagnosticUID(account.Uid); err != nil {
 			return 0, false, err
@@ -254,10 +232,10 @@ func installDiagnosticUID() (uint32, bool, error) {
 	if !errors.As(err, &missing) {
 		return 0, false, err
 	}
-	_, groupErr := user.LookupGroup("jdn-trace")
+	_, groupErr := user.LookupGroup(traceAccount)
 	var unknownGroup user.UnknownGroupError
 	if !errors.As(groupErr, &unknownGroup) {
-		return 0, false, fmt.Errorf("jdn-trace group already exists or cannot be verified")
+		return 0, false, fmt.Errorf("%s group already exists or cannot be verified", traceAccount)
 	}
 	for uid := 999; uid >= 200; uid-- {
 		if uint64(uid) == overflow {
@@ -272,7 +250,7 @@ func installDiagnosticUID() (uint32, bool, error) {
 			return 0, false, err
 		}
 	}
-	return 0, false, fmt.Errorf("no available system UID for jdn-trace")
+	return 0, false, fmt.Errorf("no available system UID for %s", traceAccount)
 }
 
 func requireDedicatedDiagnosticUID(uid string) error {
@@ -286,13 +264,13 @@ func requireDedicatedDiagnosticUID(uid string) error {
 		if len(fields) != 7 || fields[2] != uid {
 			continue
 		}
-		if found || fields[0] != "jdn-trace" || fields[6] != "/usr/sbin/nologin" && fields[6] != "/sbin/nologin" && fields[6] != "/bin/false" {
-			return fmt.Errorf("jdn-trace must use a dedicated non-login UID")
+		if found || fields[0] != traceAccount || fields[6] != "/usr/sbin/nologin" && fields[6] != "/sbin/nologin" && fields[6] != "/bin/false" {
+			return fmt.Errorf("%s must use a dedicated non-login UID", traceAccount)
 		}
 		found = true
 	}
 	if !found {
-		return fmt.Errorf("jdn-trace UID is absent from the local account database")
+		return fmt.Errorf("%s UID is absent from the local account database", traceAccount)
 	}
 	return nil
 }
@@ -310,7 +288,7 @@ func unitActive(unit string) (bool, error) {
 	switch state {
 	case "active":
 		return true, nil
-	case "inactive", "failed":
+	case "inactive", "failed", "":
 		return false, nil
 	default:
 		return false, fmt.Errorf("unit %s is currently %s", unit, state)
@@ -355,13 +333,12 @@ func verifyInstallNetwork(config policy.Config, address netip.Prefix, upstream s
 	if !found {
 		return fmt.Errorf("live IPv4 address differs from the static profile")
 	}
-	var routes []struct {
-		Gateway string `json:"gateway"`
-		Device  string `json:"dev"`
-	}
 	raw, err := system.Command("", "ip", "-j", "-4", "route", "show", "default")
-	if err != nil || json.Unmarshal(raw, &routes) != nil || len(routes) != 1 || routes[0].Device != iface.Name || routes[0].Gateway != upstream {
+	if err != nil || len(raw) == 0 {
 		return fmt.Errorf("expected a single IPv4 default route matching the static profile")
+	}
+	if err := parseDefaultRoute(raw, iface.Name, upstream); err != nil {
+		return err
 	}
 	return gateway.CheckUnusedEgress(iface.Name)
 }

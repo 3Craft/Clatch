@@ -1,5 +1,5 @@
-#ifndef JDN_GATEWAY_GUARD_H
-#define JDN_GATEWAY_GUARD_H
+#ifndef CLATCH_GATEWAY_GUARD_H
+#define CLATCH_GATEWAY_GUARD_H
 #include <linux/types.h>
 
 #define DIRECT 1

@@ -28,8 +28,8 @@ type mode struct {
 }
 
 var tproxy = mode{
-	table: "jdn_v2ray_tproxy", priority: "10048", routeDevice: "lo",
-	statePath: "/run/jdn-v2ray-tproxy.json", local: true,
+	table: "clatch_tproxy", priority: "10048", routeDevice: "lo",
+	statePath: "/run/clatch-tproxy.json", local: true,
 }
 
 var routedTPROXY = mode{

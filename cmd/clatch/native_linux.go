@@ -4,6 +4,7 @@ package main
 
 import (
 	"flag"
+	"io"
 
 	"clatch-gateway/internal/gateway"
 	"clatch-gateway/internal/native"
@@ -35,13 +36,14 @@ func runNative(args []string) (any, error) {
 
 func runNativeHook(args []string) (any, error) {
 	flags := flag.NewFlagSet("native hook", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
 	stage := flags.String("stage", "", "v2rayA transparent proxy lifecycle stage")
 	kind := flags.String("transparent-type", "", "transparent proxy mode")
 	check := flags.Bool("check", false, "validate the DNS rules without changing them")
 	confdir := flags.String("v2raya-confdir", "", "v2rayA configuration directory")
 	config := flags.String("config", policy.DefaultConfigPath, "approved guard configuration")
 	if err := flags.Parse(args); err != nil {
-		return nil, err
+		return nil, usageError("%v", err)
 	}
 	if flags.NArg() != 0 {
 		return nil, errUsage

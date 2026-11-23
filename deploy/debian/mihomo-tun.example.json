@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "debian-mihomo-tun-gateway",
+  "interface": "ens18",
+  "address": "192.0.2.10/24",
+  "gateway": "192.0.2.1",
+  "lan": ["192.0.2.0/24"],
+  "public_ipv6": false,
+  "proxy": {
+    "kind": "mihomo",
+    "mode": "tun",
+    "service": "mihomo.service",
+    "binary": "/usr/local/bin/mihomo",
+    "config": "/etc/mihomo/config.yaml",
+    "policy_source": "/root/gateway-policy.json",
+    "dns_address": "127.0.0.1",
+    "dns_port": 53
+  }
+}

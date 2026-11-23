@@ -1,0 +1,13 @@
+{
+  "expected_exits": ["203.0.113.10"],
+  "conntrack": true,
+  "expect_empty_aaaa": false,
+  "direct_url": "https://www.baidu.com/",
+  "proxy_url": "https://ip.fm/myip",
+  "dns_probes": [
+    {"domain": "www.baidu.com", "type": "A"},
+    {"domain": "ip.fm", "type": "A"},
+    {"domain": "www.google.com", "type": "A"},
+    {"domain": "www.google.com", "type": "AAAA"}
+  ]
+}

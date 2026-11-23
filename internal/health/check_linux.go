@@ -31,11 +31,13 @@ type Request struct {
 	Exits      []netip.Addr
 	EmptyAAAA  bool
 	Marks      bool
+	DNSProbes  []DNSProbe
 }
 
 type dnsCheck struct {
 	Domain        string `json:"domain"`
 	Kind          uint16 `json:"type"`
+	TypeName      string `json:"type_name"`
 	Transport     string `json:"transport"`
 	Answers       int    `json:"answers"`
 	ExpectedEmpty bool   `json:"expected_empty"`
@@ -81,17 +83,27 @@ func Check(ctx context.Context, request Request) (Report, error) {
 			request.Marks = false
 		}
 	}
-	for _, probe := range []struct {
-		domain string
-		kind   dnsmessage.Type
-	}{
-		{"www.baidu.com", dnsmessage.TypeA}, {"www.qq.com", dnsmessage.TypeA}, {"ip.fm", dnsmessage.TypeA},
-		{"www.google.com", dnsmessage.TypeA}, {"www.google.com", dnsmessage.TypeAAAA},
-	} {
+	dnsTargets := request.DNSProbes
+	if len(dnsTargets) == 0 {
+		dnsTargets = []DNSProbe{
+			{Domain: "www.baidu.com", Type: "A"},
+			{Domain: "www.qq.com", Type: "A"},
+			{Domain: "ip.fm", Type: "A"},
+			{Domain: "www.google.com", Type: "A"},
+			{Domain: "www.google.com", Type: "AAAA"},
+		}
+	}
+	for _, probe := range dnsTargets {
+		kind := dnsmessage.TypeA
+		typeName := "A"
+		if strings.EqualFold(probe.Type, "AAAA") {
+			kind = dnsmessage.TypeAAAA
+			typeName = "AAAA"
+		}
 		for _, transport := range []string{"udp", "tcp"} {
-			empty := request.EmptyAAAA && probe.kind == dnsmessage.TypeAAAA
+			empty := request.EmptyAAAA && kind == dnsmessage.TypeAAAA
 			report.DNS = append(report.DNS, dnsCheck{
-				Domain: probe.domain, Kind: uint16(probe.kind), Transport: transport, ExpectedEmpty: empty,
+				Domain: probe.Domain, Kind: uint16(kind), TypeName: typeName, Transport: transport, ExpectedEmpty: empty,
 			})
 		}
 	}

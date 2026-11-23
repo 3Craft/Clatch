@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "networks": [
+    "192.0.2.0/24",
+    "198.51.100.10/32"
+  ],
+  "metadata": {
+    "purpose": "Approved direct destinations: LAN subnet plus upstream proxy server"
+  }
+}

@@ -1,5 +1,3 @@
-//go:build linux
-
 package openwrt
 
 import (
@@ -13,8 +11,11 @@ import (
 	"regexp"
 	"slices"
 
+	"clatch-gateway/internal/guard"
 	"clatch-gateway/internal/policy"
 )
+
+const DefaultConfigPath = "/etc/clatch/openwrt.json"
 
 type Uplink struct {
 	Network string `json:"network"`
@@ -98,12 +99,27 @@ func ReadConfig(path string) (Config, error) {
 	if err != nil {
 		return config, err
 	}
-	// An external list is versioned in the policy file. Adding a LAN range
-	// explicitly avoids silently widening what the physical WAN may send.
 	if policy.Elements(config.direct, 32) == "" {
 		return config, fmt.Errorf("OpenWrt requires approved IPv4 destinations")
 	}
 	return config, nil
+}
+
+// DirectPrefixes returns the canonical direct IPv4 prefixes loaded from the policy file.
+func (c Config) DirectPrefixes() []netip.Prefix {
+	out := make([]netip.Prefix, len(c.direct))
+	copy(out, c.direct)
+	return out
+}
+
+// LANPrefixes parses and returns the canonical protected LAN prefixes.
+func (c Config) LANPrefixes() ([]netip.Prefix, error) {
+	return policy.Parse(c.LAN)
+}
+
+// PolicyEntries builds the guard policy trie map matching WAN enforcement.
+func (c Config) PolicyEntries() guard.Policy {
+	return policy.Config{}.Entries(policy.Approved{Prefixes: c.direct})
 }
 
 func (c Config) find(network, device string) (Uplink, error) {

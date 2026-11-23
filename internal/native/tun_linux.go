@@ -25,7 +25,7 @@ const (
 	TUNBypassMark = "0x80"
 	tunName       = "tun0"
 	tunAddress    = TUNIPv4 + "/30"
-	tunState      = "/run/jdn-v2raya-tun.json"
+	tunState      = "/run/clatch-v2raya-tun.json"
 )
 
 type Snapshot struct {

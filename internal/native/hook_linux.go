@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	captureTable = "jdn_v2raya_tun"
-	dnsTable     = "jdn_v2raya_lan_dns"
+	captureTable = "clatch_v2raya_tun"
+	dnsTable     = "clatch_v2raya_lan_dns"
 	proxyTable   = "v2raya"
-	dnsBypass    = "jdn-v2raya-lan-dns-bypass"
+	dnsBypass    = "clatch-v2raya-lan-dns-bypass"
 )
 
 func InstallCapture(config policy.Config, approved policy.Approved) error {
@@ -187,7 +187,7 @@ func renderCapture(config policy.Config, approved policy.Approved, local netip.A
 	if config.Diagnostic != nil {
 		diagnostic = fmt.Sprintf("  iifname %q ip saddr %s ip daddr %s ip protocol icmp icmp type echo-request icmp code 0 "+
 			"ip frag-off & 0x3fff == 0 ct state { new, established } counter meta mark set meta mark | "+TUNBypassMark+" "+
-			"comment \"jdn-native-tun-lan-icmp-diagnostic\"\n", config.Interface, config.Diagnostic.Source, config.Diagnostic.Destination)
+			"comment \"clatch-native-tun-lan-icmp-diagnostic\"\n", config.Interface, config.Diagnostic.Source, config.Diagnostic.Destination)
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, `add table inet %[1]s
@@ -198,17 +198,17 @@ table inet %[1]s {
  chain prerouting {
   type filter hook prerouting priority mangle; policy accept;
   iifname %[4]q meta nfproto ipv4 fib daddr type local return
-  iifname %[4]q meta l4proto { tcp, udp } th dport 53 counter return comment "jdn-native-tun-dns-lan"
-%[5]s  iifname %[4]q ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "jdn-native-tun-direct-lan"
+  iifname %[4]q meta l4proto { tcp, udp } th dport 53 counter return comment "clatch-native-tun-dns-lan"
+%[5]s  iifname %[4]q ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "clatch-native-tun-direct-lan"
  }
  chain output {
   type route hook output priority mangle; policy accept;
-  meta l4proto { tcp, udp } th dport 53 counter return comment "jdn-native-tun-dns-host"
-  ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "jdn-native-tun-direct-host"
+  meta l4proto { tcp, udp } th dport 53 counter return comment "clatch-native-tun-dns-host"
+  ip daddr @direct4 counter meta mark set meta mark | %[8]s comment "clatch-native-tun-direct-host"
  }
  chain postrouting {
   type nat hook postrouting priority srcnat; policy accept;
-  oifname %[4]q meta iif 0 ip saddr %[9]s ip daddr @direct4 counter snat ip to %[6]s comment "jdn-native-tun-local-source"
+  oifname %[4]q meta iif 0 ip saddr %[9]s ip daddr @direct4 counter snat ip to %[6]s comment "clatch-native-tun-local-source"
  }
 }
 add table inet %[7]s

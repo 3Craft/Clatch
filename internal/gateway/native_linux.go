@@ -171,7 +171,7 @@ func (g *Gate) switchNative(candidate native.Snapshot) error {
 		return err
 	}
 	previous := g.Config.Pins
-	next := filepath.Join(filepath.Dir(previous), fmt.Sprintf("jdn-v2raya-tun-%d", time.Now().UnixNano()))
+	next := filepath.Join(filepath.Dir(previous), fmt.Sprintf("clatch-v2raya-tun-%d", time.Now().UnixNano()))
 	settings.TrustedTUNIfindex = candidate.Ifindex
 	prepared, err := guard.Prepare("-", next, policyEntries, settings)
 	if err != nil {

@@ -1,225 +1,251 @@
 # Clatch
 
-Fail-closed egress protection for Linux proxy gateways. nftables and a pinned
-TCX egress program enforce the approved direct destinations independently.
-The Linux kernel keeps the TCX link attached across process exit and nftables
-reloads.
+Fail-closed egress protection for Linux proxy gateways. `nftables` and a pinned
+TCX eBPF egress program enforce approved direct destinations independently. The
+Linux kernel keeps the TCX link attached across process exits and `nftables`
+reloads, preventing direct traffic leaks if the proxy crashes or firewall rules
+are flushed.
 
-Clatch uses Go for configuration, kernel state and operations. The eBPF packet
-classifier is written in C. The project source is GPL-2.0-only. Dependencies retain their upstream licenses.
-
-## Build
-
-Go 1.26 or newer can build both release binaries. The eBPF object requires
-Clang with a BPF target, Linux UAPI headers and libbpf's compile-time headers.
-
-```sh
-make -j2
-make test
+```
+LAN clients ─▶ Proxy (TPROXY / TUN) ─▶ nftables guard ─▶ TCX eBPF egress ─▶ WAN
+                                            │                  │
+                                     drops unapproved   independent kernel
+                                     direct egress      fail-closed LPM check
 ```
 
-On macOS or a host without the Linux toolchain, build the eBPF object in the
-included Debian container before running the same Go build:
+Clatch uses Go for configuration, kernel state, and operations, and C for the
+eBPF packet classifier. Project source is licensed under GPL-2.0-only;
+dependencies retain their upstream licenses.
+
+## Prerequisites
+
+- **Linux kernel 6.6 or newer** with pinned TCX eBPF support and `bpffs`.
+- **Host utilities**: `nft`, `ip`, `tc`, `sysctl` (plus `conntrack` for optional
+  `clatch health --conntrack`).
+- **Linux systemd gateway target** (Debian 13+, Ubuntu 24.04+/26.04+, etc.):
+  static IPv4 configured via either `ifupdown` (`/etc/network/interfaces`) or
+  `systemd-networkd` / Netplan, `systemd`, `ping`, `traceroute`, and one
+  supported backend (`xray-core`, `v2ray-core`, `mihomo` TPROXY/TUN with
+  `tun.device: clatch-tun`, or native `v2rayA` TPROXY/TUN).
+- **OpenWrt target** (25.12+): `netifd`, `firewall4`, `ip-full`, `tc-tiny`, and
+  optionally `kmod-nft-tproxy` for LAN capture.
+- **macOS / non-Linux offline verifier**: `clatch` also builds natively on macOS
+  (`make macos`) for offline config/profile validation, nftables rendering, LPM
+  explanation, schema export, and starter generation; Linux-only runtime commands
+  display a clear platform hint.
+- **IPv4-only egress**: public IPv6 egress is intentionally disabled.
+
+Run `clatch doctor` on any target host to verify all prerequisites in one pass.
+
+## Quickstart (Linux systemd gateway)
+
+Prepare your static IPv4 interface (`ifupdown` or `systemd-networkd`) and proxy
+service first, then:
 
 ```sh
-make bpf-container
-make -j2
-```
+# 1. Generate starter profile and policy files (auto-detects local IPv4 network on Linux)
+./clatch-linux-amd64 init profile --backend xray-core --output /root/gateway-profile.json
+./clatch-linux-amd64 init policy --output /root/gateway-policy.json
 
-The release files are `dist/clatch-linux-amd64` and `dist/clatch-linux-arm64`.
-Both embed the BPF object and are built with CGO disabled. The gateway commands
-use the host's `nft`, `ip`, `tc` and `sysctl` utilities.
+# 2. Edit both files for your proxy paths and approved direct CIDRs, then check readiness
+./clatch-linux-amd64 doctor --profile /root/gateway-profile.json
 
-## Current implementation
-
-- TCX attachment and inspection, complete trie replacement, per-CPU counters,
-  and compare-and-swap generation changes on a single pinned link.
-- Read and validate existing approved policy snapshots for v2rayA, mihomo,
-  Xray and V2Fly. Render the existing single-arm IPv4 nftables guard.
-- Verify or establish both guard layers before opening IPv4 forwarding for
-  standalone TPROXY and managed mihomo TUN gateways. Adopt existing 8-byte and 12-byte settings ABIs.
-- Manage IPv4 TPROXY interception for standalone mihomo, Xray and V2Fly.
-  Managed mihomo TUN uses a persistent root-owned device. Each interception
-  mode owns its nftables table and reserved routing state.
-- Verify v2rayA's native TPROXY or TUN capture against the approved
-  GeoIP/whitelist data. The transparent proxy lifecycle hook manages the
-  LAN DNS redirect and authorizes the live TUN device in TUN mode.
-- Stage policy updates through the intersection of old and new CIDRs. Require
-  a matching source and DNS readiness before committing. The v2rayA whitelist
-  command previews edits, backs up SQLite and supports recovery and restore.
-- Run Debian ping and traceroute through the restricted diagnostic account.
-- Probe UDP/TCP DNS, direct and proxied application requests, the expected
-  proxy exit address, and optional conntrack verification with `clatch health`.
-- Install a new Debian 13 guard from a static ifupdown profile, with a
-  recovery executable and systemd rollback timer in the installation backup.
-- Migrate an existing Debian 13 gateway with its current configuration,
-  approved policy and pinned TCX link. Confirm or roll back the change using
-  the migration backup.
-- Guard routed OpenWrt IPv4 WAN interfaces before netifd applies a static
-  address or starts DHCP. The separate WAN TCX program checks destinations
-  after masquerading.
-
-## Install on Debian 13
-
-Prepare the static IPv4 ifupdown interface and the proxy service first. Set
-the proxy configuration and CIDR source in
-`deploy/debian/standalone.example.json`. A profile without `proxy` reads the
-prepared v2rayA mode and whitelist from its SQLite and GeoIP data. Set
-`native_mode` to `tproxy` or `tun` to require a specific mode. The installer
-uses the existing proxy credentials and service enablement. It writes the
-gateway configuration and generated policy to `/etc/clatch/` and enables
-`clatch-guard.service`.
-
-```sh
+# 3. Review the installation plan (no changes written yet)
 ./clatch-linux-amd64 install plan /root/gateway-profile.json
+
+# 4. Apply with a persistent local backup directory (arms a 10-minute rollback timer)
 ./clatch-linux-amd64 install apply /root/gateway-profile.json /root/clatch-install
-gateway-guard verify
-clatch install confirm /root/clatch-install
+
+# 5. Verify guard enforcement and DNS/HTTPS health, then confirm
+clatch guard verify
+clatch health
+clatch install confirm
 ```
 
-Apply leaves an originally stopped backend stopped. Start it when ready and
-verify DNS before confirming. Keep the private backup on a persistent local
-filesystem. The recovery command restores the previous installation files.
-For an originally stopped backend, recovery retains the egress guard and
-holds forwarding disabled.
+Example templates for all supported backends are provided in `deploy/debian/`:
+- [standalone.example.json](deploy/debian/standalone.example.json) (Xray TPROXY)
+- [mihomo-tun.example.json](deploy/debian/mihomo-tun.example.json) (Mihomo managed TUN, `device: clatch-tun`)
+- [v2raya.example.json](deploy/debian/v2raya.example.json) (Native v2rayA)
+- [policy.example.json](deploy/debian/policy.example.json) (Standalone CIDR policy source)
+- [health.example.json](deploy/debian/health.example.json) (Health check defaults)
+
+`install apply` leaves an originally stopped proxy service stopped; start it and
+verify DNS before confirming. To roll back manually (even after confirmation):
 
 ```sh
 /root/clatch-install/clatch-recover install rollback /root/clatch-install
 ```
 
-## Adopt a legacy Python gateway on Debian
-
-Run the commands on a disposable clone first. Keep the backup on a persistent
-local filesystem and use a new absolute path. The plan checks the running
-legacy guard, installed interception mode and approved policy. This adoption
-keeps the existing boot wiring and configuration in `/etc/jdn-gateway/`.
-For that layout, pass `--config /etc/jdn-gateway/config.json` to
-`clatch guard verify`, `clatch config check` or `clatch health`. Use
-`systemctl status jdn-gateway-guard.service` to check the legacy unit.
+### Upgrade and Uninstall
 
 ```sh
-./clatch-linux-amd64 migrate plan
-./clatch-linux-amd64 migrate apply /root/clatch-migration
-gateway-guard verify
-clatch migrate confirm /root/clatch-migration
+# Safely upgrade /usr/local/sbin/clatch (backs up previous binary and verifies guard)
+./clatch-linux-amd64 upgrade
+
+# Preview uninstall actions (dry run), then remove cleanly with --yes
+clatch uninstall
+clatch uninstall --yes
+clatch uninstall --keep-config --yes
 ```
 
-The migration arms a systemd rollback timer before replacing the entry
-points. Confirm after checking the guard, DNS and expected routes. Use
-`/root/clatch-migration/clatch-recover migrate rollback /root/clatch-migration`
-to restore the previous entry points, including after confirmation.
+## Inspect, Diagnose, and Operate
 
-If a v2rayA package update replaced the running executables, resolve the
-drift before migrating. When the GeoIP file has changed too, restore the
-copy that matches `geoip_sha256` in the approved policy before restarting
-v2rayA. Verify the legacy guard and DNS, then rerun the migration plan.
-After migration, keep that approved copy available while using
-`gateway-whitelist refresh --apply` to approve the new GeoIP data.
-
-## Inspect a Debian gateway
-
-`clatch status` shows local service, guard, policy, tunnel, and deployment
-state. It can show a degraded gateway or a pending change without sending
-external probes. Add `--json` for automation.
+All operational commands default to `/etc/clatch/config.json` (override with
+`--config`), print human-readable output by default, and emit structured JSON
+with `--json` or `CLATCH_FORMAT=json`.
 
 ```sh
-clatch status
-clatch guard verify
-clatch config check
-clatch health
+clatch status                       # Local service, guard, policy, tunnel & pending state
+clatch doctor                       # Full non-destructive host & config readiness checklist
+clatch guard verify                 # Verify live nftables ruleset and pinned TCX program
+clatch config check                 # Validate config.json and approved policy capacity
+clatch explain 1.1.1.1 --live       # Explain why an IP is allowed direct egress or blocked
+clatch stats                        # Show TCX allow/deny packet counters
+clatch health                       # Run UDP/TCP DNS and direct/proxied HTTPS probes
 ```
 
-These commands default to `/etc/clatch/config.json`. Use `--config` for a
-different gateway file. Health checks use the sibling `health.json` for probe
-defaults. An example for `/etc/clatch/health.json` is below.
+### Health probes (`health.json`)
+
+`clatch health` reads defaults from the sibling `health.json` next to
+`config.json` (for example `/etc/clatch/health.json`). Explicit CLI flags
+override saved values.
 
 ```json
 {
   "expected_exits": ["203.0.113.10"],
-  "conntrack": true
+  "conntrack": true,
+  "direct_url": "https://www.baidu.com/",
+  "proxy_url": "https://ip.fm/myip",
+  "dns_probes": [
+    {"domain": "www.baidu.com", "type": "A"},
+    {"domain": "ip.fm", "type": "A"},
+    {"domain": "www.google.com", "type": "A"},
+    {"domain": "www.google.com", "type": "AAAA"}
+  ]
 }
 ```
 
-Set `expected_exits` to the approved proxy exits for that gateway. With one
-local IPv4 address in the gateway config, health uses it as the DNS endpoint
-on port 53. Set `dns` in `health.json` to choose another DNS endpoint. Set
-`expect_empty_aaaa` when DNS policy requires a successful empty AAAA reply.
-Explicit probe options override the file.
+- When `config.json` has one local IPv4 address, `health` uses it on port 53 as
+  the default DNS endpoint unless `dns` or `--dns` is set.
+- `direct_url`, `proxy_url`, and `dns_probes` are optional; omit them to use
+  Clatch's built-in defaults, or customize them for your region and routing rules.
+- Run health probes from a host whose traffic follows the gateway under test.
+  On the gateway itself, `--conntrack` verifies tracked HTTPS flows (including
+  native v2rayA TUN reply tuples).
 
-Run the health probes from a host whose traffic follows the gateway under
-test. On the gateway, `--conntrack` checks the tracked HTTPS flows. For native
-v2rayA TUN it uses the installed policy, route lookup, and conntrack reply
-tuple. Both native TUN flows have connection mark zero.
+### Whitelist and policy updates
+
+For native v2rayA gateways, preview changes first and commit with `--apply`
+(flags may appear before or after the subcommand):
 
 ```sh
-clatch health --json --dns 192.0.2.1 --expected-exit 203.0.113.10
+clatch whitelist show
+clatch whitelist add 198.51.100.10/32
+clatch whitelist add 198.51.100.10/32 --apply
+clatch whitelist refresh --apply
 ```
 
-The check commands write JSON on success and failure. Health reports include
-passed, failed, and skipped probes. Exit code 0 means the check succeeded, 1
-means a check or operation failed, and 2 means the arguments were invalid.
-`status` returns 0 when it collects a report, including a degraded report.
-Use `clatch --help` or `clatch COMMAND --help` to discover options.
+For standalone backends (`xray-core`, `v2ray-core`, `mihomo`), update direct
+CIDRs atomically through the old/new intersection:
+
+```sh
+clatch policy stage /etc/clatch/config.json /root/policy-tx /root/new-policy.json
+clatch policy commit /etc/clatch/config.json /root/policy-tx
+```
+
+## CLI Design: Human-Friendly and Agent-Friendly
+
+- **Dual-mode output**: Clean aligned text by default; add `--json`,
+  `--format json`, or set `CLATCH_FORMAT=json` for strict machine-readable JSON
+  on every command (including structured error envelopes on failure).
+- **Self-describing CLI**:
+  - `clatch version --json` reports build version, target, and embedded BPF status.
+  - `clatch help --json` (and `clatch help COMMAND --json`) exports the full
+    command catalog, flags, defaults, mutating/root/platform metadata, and exit codes.
+  - `clatch schema --list` and `clatch schema <NAME>` print Draft 2020-12 JSON
+    Schemas for `install-profile`, `config`, `policy-source`, `health`, and `openwrt`.
+- **Cross-platform offline verifier (macOS)**:
+  - Run `config check`, `nft render`, `explain` (offline), `init`, `schema`,
+    `doctor`, `openwrt check`, `version`, and `help` natively on macOS before
+    deploying to Linux. Linux-only runtime commands exit cleanly with an
+    `UNSUPPORTED_PLATFORM` hint.
+- **Exit codes**: `0` succeeded (`status` without `--strict` returns `0` even on
+  degraded reports; add `--strict` to fail non-healthy states), `1` check or
+  operation failed (or unsupported platform), `2` invalid arguments or unknown
+  command.
+
+See [docs/agent-guide.md](docs/agent-guide.md) for a concise AI agent playbook.
 
 ## OpenWrt
 
-The routed WAN profile uses netifd, firewall4, `ip-full` and `tc-tiny`. The
-kernel must support pinned TCX egress links. The profile is intentionally
-IPv4-only. Run the proxy as a separate service and add each proxy endpoint
-to the direct policy. Set `proxy_device` only for a TUN device you control
-and configure its capture and DNS separately.
+The routed WAN profile uses `netifd`, `firewall4`, `ip-full`, and `tc-tiny` on a
+kernel with pinned TCX egress support. It is intentionally IPv4-only. Run the
+proxy as a separate service and add each proxy server endpoint to the direct
+policy.
 
-Configure the logical uplink and its physical Ethernet device in
-`deploy/openwrt/openwrt.example.json`. Use the example policy format for your
-approved IPv4 destinations. Use `unmanaged_egress_devices` for specific
-interfaces whose egress remains under the existing firewall, such as a primary
-uplink during a guarded backup uplink trial. Traffic from these interfaces
-still passes through the protected LAN source checks when routed to a guarded
-uplink. Install the release binary as `/usr/sbin/clatch`,
-the configuration as `/etc/clatch/openwrt.json`, and the policy at the path
-given in that configuration. Place `clatch_static.sh` in `/lib/netifd/proto/`.
-Generate `clatch_dhcp.sh` from the installed OpenWrt DHCP handler and install
-it in the same directory for DHCP uplinks.
+1. Install the release binary as `/usr/sbin/clatch`, then generate and validate
+   the configuration files:
+   ```sh
+   clatch init openwrt --lan-device br-lan --lan 192.168.56.0/24 --uplink wan:eth1 --output /etc/clatch/openwrt.json
+   clatch init policy --networks 198.18.0.1/32,198.18.0.3/32 --output /etc/clatch/policy.json
+   clatch openwrt check
+   ```
+   See also [deploy/openwrt/openwrt.example.json](deploy/openwrt/openwrt.example.json)
+   and [deploy/openwrt/policy.example.json](deploy/openwrt/policy.example.json).
+   Use `unmanaged_egress_devices` for interfaces whose egress remains under the
+   existing firewall (for example, a primary uplink during a guarded backup trial).
+2. Install the embedded `netifd` protocol handlers (`clatch_static.sh` and
+   auto-generated `clatch_dhcp.sh`):
+   ```sh
+   clatch openwrt install --dry-run
+   clatch openwrt install
+   ```
+3. From the local console, configure each external IPv4 interface with
+   `proto=clatch_static` or `proto=clatch_dhcp` and its exact UCI `device`.
+   Disable separate WAN IPv6 interfaces and flow offloading before bringing up
+   guarded uplinks.
+4. Inspect and verify:
+   ```sh
+   clatch openwrt status
+   clatch openwrt verify /etc/clatch/openwrt.json wan eth1
+   clatch explain 198.18.0.1 --openwrt /etc/clatch/openwrt.json
+   clatch stats --openwrt /etc/clatch/openwrt.json
+   ```
+5. For LAN TCP and UDP capture, install `kmod-nft-tproxy` and configure a
+   transparent listener on `127.0.0.1`:
+   ```sh
+   clatch openwrt tproxy-start /etc/clatch/openwrt.json 12345
+   clatch openwrt tproxy-stop
+   ```
 
-```sh
-tmp=$(mktemp /lib/netifd/proto/.clatch-dhcp.XXXXXX)
-sh generate-dhcp.sh > "$tmp" && chmod 0755 "$tmp" &&
-    mv "$tmp" /lib/netifd/proto/clatch_dhcp.sh
-```
+## Build from Source
 
-From the local console, configure each external IPv4 interface with
-`proto=clatch_static` or `proto=clatch_dhcp` and its exact UCI `device`.
-Disable separate WAN IPv6 interfaces and flow offload before enabling the
-guarded uplinks. Check each uplink after bringing network and firewall up.
-
-```sh
-clatch openwrt verify /etc/clatch/openwrt.json wan eth1
-```
-
-For LAN TCP and UDP capture, install `kmod-nft-tproxy` and configure a
-transparent listener on `127.0.0.1`. Start capture after the uplink gates
-verify. The direct policy and LAN-local traffic bypass the listener.
-
-```sh
-clatch openwrt tproxy-start /etc/clatch/openwrt.json 12345
-clatch openwrt tproxy-stop
-```
-
-Use these commands in the proxy's service lifecycle to restore capture
-after boot. Stop removes the interception rules and leaves WAN enforcement
-active.
-
-The [verification report](docs/verification.md) records the tested backends,
-hardware targets and failure cases.
-
-## Inspect a compatible snapshot
+Go 1.26 or newer builds both static Linux release binaries (`CGO_ENABLED=0`,
+embedded eBPF object) and the macOS offline verifier (`make macos`). Rebuilding
+the eBPF object itself requires Clang with a BPF target, Linux UAPI headers, and
+`libbpf` headers.
 
 ```sh
-./dist/clatch-linux-amd64 config check /etc/clatch/config.json
-./dist/clatch-linux-amd64 nft render /etc/clatch/config.json
+make -j2          # Linux amd64 & arm64 binaries with embedded eBPF
+make macos        # Native macOS offline verifier binary
+make test
 ```
 
-The `bpf` subcommands operate on explicit interfaces and bpffs paths. Passing
-`-` as the object path selects the embedded BPF object. The guardian's
-single-arm policy and the kernel layout originate in the jdnOps
-`v2raya/fail-closed` implementation.
+On macOS or a host without the Linux BPF toolchain, build the eBPF object in the
+included Debian container first:
+
+```sh
+make bpf-container
+make -j2 VERSION=v0.1.0
+```
+
+Release artifacts are written to `dist/clatch-linux-amd64`,
+`dist/clatch-linux-arm64`, and `dist/clatch-darwin-<arch>`.
+
+## Verification and Low-Level Tools
+
+- See [docs/verification.md](docs/verification.md) for the tested backends,
+  hardware targets, and packet leak verification matrix.
+- Low-level subcommands (`bpf`, `nft render`, `native`, `tproxy`, `managed-tun`)
+  remain available for advanced diagnostics and custom wiring. In `clatch bpf`,
+  passing `-` as the object path selects the embedded eBPF object.

@@ -29,7 +29,7 @@ func Run(kind, configPath string, args []string) (int, error) {
 	if err != nil {
 		return 2, err
 	}
-	account, err := user.Lookup("jdn-trace")
+	account, err := user.Lookup("clatch-trace")
 	if err != nil {
 		return 2, err
 	}
@@ -47,7 +47,7 @@ func Run(kind, configPath string, args []string) (int, error) {
 	unit := fmt.Sprintf("clatch-%s-%d-%x.service", kind, os.Getpid(), suffix)
 	cmdArgs := []string{
 		"--unit=" + unit, "--quiet", "--wait", "--pipe", "--collect", "--service-type=exec",
-		"-p", "User=jdn-trace", "-p", "Group=jdn-trace",
+		"-p", "User=clatch-trace", "-p", "Group=clatch-trace",
 		"-p", "CapabilityBoundingSet=CAP_NET_RAW", "-p", "AmbientCapabilities=CAP_NET_RAW",
 		"-p", "NoNewPrivileges=yes", "-p", "RestrictAddressFamilies=" + families,
 		"-p", "ProtectSystem=strict", "-p", "ProtectHome=yes", "-p", "PrivateDevices=yes",
@@ -107,7 +107,11 @@ func diagnosticArgs(kind, iface string, args []string) ([]string, string, error)
 		}
 		return append([]string{"/usr/bin/ping", "-4", "-I", iface}, args...), families + " AF_NETLINK", nil
 	case "traceroute":
-		command := []string{"/usr/bin/traceroute.db"}
+		bin := "/usr/bin/traceroute.db"
+		if _, err := os.Stat(bin); err != nil {
+			bin = "/usr/bin/traceroute"
+		}
+		command := []string{bin}
 		explicit := false
 		for _, arg := range args {
 			if arg == "--" {
