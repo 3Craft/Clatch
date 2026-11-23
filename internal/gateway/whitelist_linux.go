@@ -81,11 +81,18 @@ func checkWhitelistOptions(config policy.Config, request *WhitelistRequest) erro
 		request.DNS = nativeDNS
 		return nil
 	}
-	address, err := netip.ParseAddr(request.DNS)
-	if err != nil || !address.Is4() {
-		return fmt.Errorf("whitelist DNS server must be an IPv4 address")
+	endpoint, err := netip.ParseAddrPort(request.DNS)
+	if err != nil {
+		address, addrErr := netip.ParseAddr(request.DNS)
+		if addrErr != nil {
+			return fmt.Errorf("whitelist DNS server must be an IPv4 address or address:port")
+		}
+		endpoint = netip.AddrPortFrom(address, 53)
 	}
-	request.DNS = netip.AddrPortFrom(address, 53).String()
+	if !endpoint.Addr().Is4() || endpoint.Port() == 0 {
+		return fmt.Errorf("whitelist DNS server must be an IPv4 address or address:port")
+	}
+	request.DNS = endpoint.String()
 	return nil
 }
 

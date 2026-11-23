@@ -8,17 +8,28 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"clatch-gateway/internal/policy"
 )
+
+// DNSProbe configures a single domain + record type probe in health.json.
+type DNSProbe struct {
+	Domain string `json:"domain"`
+	Type   string `json:"type"` // "A" or "AAAA"
+}
 
 type Defaults struct {
 	DNS           string       `json:"dns,omitempty"`
 	ExpectedExits []netip.Addr `json:"expected_exits,omitempty"`
 	Conntrack     bool         `json:"conntrack,omitempty"`
 	EmptyAAAA     bool         `json:"expect_empty_aaaa,omitempty"`
+	DirectURL     string       `json:"direct_url,omitempty"`
+	ProxyURL      string       `json:"proxy_url,omitempty"`
+	DNSProbes     []DNSProbe   `json:"dns_probes,omitempty"`
 }
 
 func ReadDefaults(config string) (Defaults, error) {
@@ -48,6 +59,26 @@ func ReadDefaults(config string) (Defaults, error) {
 	if defaults.DNS != "" {
 		if _, err := ParseResolver(defaults.DNS); err != nil {
 			return defaults, fmt.Errorf("%s: %w", path, err)
+		}
+	}
+	for _, item := range []struct{ field, raw string }{
+		{"direct_url", defaults.DirectURL},
+		{"proxy_url", defaults.ProxyURL},
+	} {
+		if item.raw == "" {
+			continue
+		}
+		parsed, err := url.Parse(item.raw)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return defaults, fmt.Errorf("%s: %s must be an http or https URL", path, item.field)
+		}
+	}
+	for i := range defaults.DNSProbes {
+		probe := &defaults.DNSProbes[i]
+		probe.Domain = strings.TrimSpace(probe.Domain)
+		probe.Type = strings.ToUpper(strings.TrimSpace(probe.Type))
+		if probe.Domain == "" || (probe.Type != "A" && probe.Type != "AAAA") {
+			return defaults, fmt.Errorf("%s: dns_probes[%d] requires a non-empty domain and type A or AAAA", path, i)
 		}
 	}
 	return defaults, nil
