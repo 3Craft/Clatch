@@ -36,6 +36,7 @@ type installManifest struct {
 	NFTActive     bool            `json:"nft_active"`
 	NFTEnabled    string          `json:"nft_enabled"`
 	NetworkActive bool            `json:"network_active"`
+	NetworkStack  string          `json:"network_stack,omitempty"`
 	Sysctls       []string        `json:"sysctls"`
 }
 
@@ -55,14 +56,17 @@ func Install(action, profile, backup string) (map[string]any, error) {
 		for _, change := range p.Changes {
 			paths = append(paths, change.Path)
 		}
-		return map[string]any{"interface": p.Config.Interface, "backend": p.Service, "network_sha256": p.PolicySHA,
-			"files": paths, "backend_active": p.ProxyActive, "diagnostic_uid": p.Config.DiagnosticUID}, nil
+		return map[string]any{
+			"interface": p.Config.Interface, "backend": p.Service, "network_sha256": p.PolicySHA,
+			"network_stack": p.NetworkStack, "files": paths, "backend_active": p.ProxyActive,
+			"diagnostic_uid": p.Config.DiagnosticUID,
+		}, nil
 	}
 	if !filepath.IsAbs(backup) || filepath.Clean(backup) != backup || backup == "/" {
 		return nil, fmt.Errorf("install backup must be a canonical absolute path")
 	}
 	var result map[string]any
-	err := system.WithLock(migrationLock, func() error {
+	err := system.WithLock(installLock, func() error {
 		var err error
 		switch action {
 		case "apply":
@@ -142,7 +146,7 @@ func existingInstall(profile string) (map[string]any, bool, error) {
 		return nil, true, err
 	}
 	if len(m.Changes) == 0 || m.Changes[0].Path != binaryPath || digest(artifact) != digest(m.Changes[0].After.Data) {
-		return nil, true, fmt.Errorf("executable differs from the installed gateway")
+		return nil, true, fmt.Errorf("executable differs from the installed gateway (use `clatch upgrade` to update the binary)")
 	}
 	status, err := verifyInstall(m)
 	return map[string]any{"unchanged": true, "state": current.State, "backup": m.Backup, "guard": status}, true, err
@@ -180,8 +184,13 @@ func applyInstall(profile, backup string) (map[string]any, error) {
 			Interface: p.Config.Interface, Service: p.Service, Created: time.Now().UTC()},
 		Config: p.Config, Approval: p.Approval, ProfileSHA: digest(profileRaw),
 		ProxyActive: p.ProxyActive, NFTActive: p.NFTActive, NFTEnabled: p.NFTEnabled,
+		NetworkStack: p.NetworkStack,
 	}
-	m.NetworkActive, err = unitActive("networking.service")
+	netUnit := "networking.service"
+	if p.NetworkStack == "systemd-networkd" {
+		netUnit = "systemd-networkd.service"
+	}
+	m.NetworkActive, err = unitActive(netUnit)
 	if err != nil {
 		return nil, err
 	}
@@ -222,8 +231,10 @@ func applyInstall(profile, backup string) (map[string]any, error) {
 	if err := writeJSON(installState, deployment{Backup: backup, State: "applied"}); err != nil {
 		return nil, err
 	}
-	return map[string]any{"state": "applied", "backup": backup, "rollback_timer": m.Unit + ".timer",
-		"backend_active": m.ProxyActive, "guard": status}, nil
+	return map[string]any{
+		"state": "applied", "backup": backup, "network_stack": m.NetworkStack,
+		"rollback_timer": m.Unit + ".timer", "backend_active": m.ProxyActive, "guard": status,
+	}, nil
 }
 
 func (m installManifest) apply(createAccount bool) (map[string]any, error) {
@@ -237,7 +248,7 @@ func (m installManifest) apply(createAccount bool) (map[string]any, error) {
 	}
 	if createAccount {
 		if _, err := system.Command("", "useradd", "--system", "--uid", strconv.FormatUint(uint64(m.Config.DiagnosticUID), 10),
-			"--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", "jdn-trace"); err != nil {
+			"--user-group", "--no-create-home", "--shell", "/usr/sbin/nologin", traceAccount); err != nil {
 			return nil, err
 		}
 	}
@@ -264,10 +275,14 @@ func (m installManifest) apply(createAccount bool) (map[string]any, error) {
 	if _, err := system.Command("", "systemctl", "daemon-reload"); err != nil {
 		return nil, err
 	}
-	if _, err := system.Command("", "systemd-analyze", "verify", "--man=no", GuardUnit, "nftables.service"); err != nil {
+	verifyUnits := []string{GuardUnit}
+	if m.NFTEnabled != "" {
+		verifyUnits = append(verifyUnits, "nftables.service")
+	}
+	if _, err := system.Command("", "systemd-analyze", append([]string{"verify", "--man=no"}, verifyUnits...)...); err != nil {
 		return nil, err
 	}
-	if _, err := system.Command("", "systemctl", "enable", "--now", GuardUnit, "nftables.service"); err != nil {
+	if _, err := system.Command("", "systemctl", append([]string{"enable", "--now"}, verifyUnits...)...); err != nil {
 		return nil, err
 	}
 	if m.ProxyActive {
@@ -335,7 +350,7 @@ func nativePinPaths() ([]string, error) {
 		if path == defaultPins {
 			continue
 		}
-		timestamp, ok := strings.CutPrefix(path, "/sys/fs/bpf/jdn-v2raya-tun-")
+		timestamp, ok := strings.CutPrefix(path, "/sys/fs/bpf/clatch-v2raya-tun-")
 		if _, err := strconv.ParseUint(timestamp, 10, 64); !ok || err != nil {
 			return nil, fmt.Errorf("invalid native TUN generation pin path")
 		}
@@ -445,7 +460,7 @@ func (m installManifest) restore() error {
 	if err := m.emergencyGuard(); err != nil {
 		return err
 	}
-	if !m.NFTActive {
+	if m.NFTEnabled != "" && !m.NFTActive {
 		if _, err := system.Command("", "systemctl", "stop", "nftables.service"); err != nil {
 			return err
 		}
@@ -473,7 +488,7 @@ func (m installManifest) restoreUnits() error {
 	if err := os.Remove(link); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if m.NFTEnabled != "enabled" {
+	if m.NFTEnabled != "" && m.NFTEnabled != "enabled" {
 		if _, err := system.Command("", "systemctl", "disable", "nftables.service"); err != nil {
 			return err
 		}
@@ -489,7 +504,11 @@ func (m installManifest) restoreUnits() error {
 		}
 	}
 	if m.NetworkActive {
-		_, err := system.Command("", "systemctl", "start", "networking.service")
+		netUnit := "networking.service"
+		if m.NetworkStack == "systemd-networkd" {
+			netUnit = "systemd-networkd.service"
+		}
+		_, err := system.Command("", "systemctl", "start", netUnit)
 		return err
 	}
 	return nil
@@ -527,8 +546,14 @@ func (m installManifest) restoreConnectivity() error {
 		return err
 	}
 	if iface.Flags&net.FlagUp == 0 {
-		if _, err := system.Command("", "ifup", "--force", m.Interface); err != nil {
-			return err
+		if m.NetworkStack == "systemd-networkd" {
+			if _, err := system.Command("", "ip", "link", "set", "dev", m.Interface, "up"); err != nil {
+				return err
+			}
+		} else {
+			if _, err := system.Command("", "ifup", "--force", m.Interface); err != nil {
+				return err
+			}
 		}
 	}
 	if m.ProxyActive {
@@ -551,7 +576,7 @@ func (m installManifest) restoreConnectivity() error {
 				return err
 			}
 		}
-		if _, err := system.Command("", "nft", "delete", "table", "inet", "jdn_gateway_guard"); err != nil {
+		if _, err := system.Command("", "nft", "delete", "table", "inet", firewall.TableName); err != nil {
 			return err
 		}
 		if _, err := system.Command("", "sysctl", append([]string{"-q", "-w"}, m.Sysctls...)...); err != nil {

@@ -1,5 +1,3 @@
-//go:build linux
-
 package main
 
 import (
@@ -7,7 +5,6 @@ import (
 	"net/netip"
 	"strings"
 
-	"clatch-gateway/internal/guard"
 	"clatch-gateway/internal/openwrt"
 	"clatch-gateway/internal/policy"
 )
@@ -31,7 +28,7 @@ func runExplain(args []string) (any, error) {
 	var live bool
 	flags := options.flags("explain")
 	flags.StringVar(&openwrtPath, "openwrt", "", "OpenWrt gateway configuration file")
-	flags.BoolVar(&live, "live", false, "also inspect the live kernel TCX LPM trie")
+	flags.BoolVar(&live, "live", false, "also inspect the live kernel TCX LPM trie (Linux only)")
 
 	var target string
 	var flagArgs []string
@@ -79,6 +76,9 @@ func runExplain(args []string) (any, error) {
 
 	var report explainReport
 	if openwrtPath != "" {
+		if live {
+			return nil, usageError("--live is currently supported only for Linux gateway configs (--config)")
+		}
 		cfg, err := openwrt.ReadConfig(openwrtPath)
 		if err != nil {
 			return nil, err
@@ -104,30 +104,25 @@ func runExplain(args []string) (any, error) {
 		verdict := policy.Explain(addr, entries)
 		report = explainReport{
 			Target:    addr.String(),
-			Mode:      "debian",
+			Mode:      "linux",
 			Config:    options.config,
 			PolicySHA: approved.NetworkSHA256,
 			Verdict:   verdict,
 		}
 		if live {
-			report.LiveChecked = true
-			active, err := guard.Dump(cfg.Pins)
-			if err != nil {
-				report.LiveError = err.Error()
-			} else {
-				liveEntries := make(guard.Policy, len(active.Entries))
-				for _, row := range active.Entries {
-					p, pErr := netip.ParsePrefix(row[1].(string))
-					if pErr != nil {
-						continue
-					}
-					key := guard.Key{Family: row[0].(uint32), PrefixLen: uint32(p.Bits() + 32)}
-					copy(key.Address[:], p.Addr().AsSlice())
-					liveEntries[key] = row[2].(uint32)
+			liveVerdict, liveErr := explainLiveKernel(addr, cfg.Pins)
+			if liveErr != nil {
+				if liveErr == errUnsupportedPlatform || strings.Contains(liveErr.Error(), errUnsupportedPlatform.Error()) {
+					return nil, liveErr
 				}
-				lv := policy.Explain(addr, liveEntries)
-				report.LiveVerdict = &lv
-				matches := lv.Decision == verdict.Decision && lv.MatchedPrefix == verdict.MatchedPrefix && lv.FlagMask == verdict.FlagMask
+				report.LiveChecked = true
+				report.LiveError = liveErr.Error()
+			} else {
+				report.LiveChecked = true
+				report.LiveVerdict = &liveVerdict
+				matches := liveVerdict.Decision == verdict.Decision &&
+					liveVerdict.MatchedPrefix == verdict.MatchedPrefix &&
+					liveVerdict.FlagMask == verdict.FlagMask
 				report.LiveMatches = &matches
 			}
 		}

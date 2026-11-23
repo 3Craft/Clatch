@@ -3,39 +3,49 @@
 package deploy
 
 import (
+	"errors"
 	"fmt"
 	"net/netip"
 	"os"
+	"path/filepath"
 
 	"clatch-gateway/internal/policy"
 )
 
-// ProfileCheck describes one non-destructive validation result for an install profile.
-type ProfileCheck struct {
-	ID      string `json:"id"`
-	Status  string `json:"status"` // pass, warn, fail
-	Message string `json:"message"`
-	Hint    string `json:"hint,omitempty"`
-}
-
-// CheckInstallProfile validates a Debian install profile and checks host
-// network/ifupdown alignment without modifying system state.
+// CheckInstallProfile validates a Clatch install profile and checks host
+// network manager alignment without modifying system state.
 func CheckInstallProfile(path string) []ProfileCheck {
-	var checks []ProfileCheck
-	profile, err := readInstallProfile(path)
-	if err != nil {
-		return []ProfileCheck{{
-			ID:      "profile.schema",
-			Status:  "fail",
-			Message: err.Error(),
-			Hint:    "Run `clatch schema install-profile` or `clatch init profile` to compare against the schema.",
-		}}
+	checks := CheckInstallProfileSchema(path)
+	if len(checks) == 0 || checks[0].Status != "pass" {
+		return checks
 	}
-	checks = append(checks, ProfileCheck{
-		ID:      "profile.schema",
-		Status:  "pass",
-		Message: fmt.Sprintf("Valid schema-1 profile for interface %s (%s via %s)", profile.Interface, profile.Address, profile.Gateway),
-	})
+	profile, err := ReadInstallProfile(path)
+	if err != nil {
+		return checks
+	}
+
+	var existing []string
+	for _, item := range []string{configPath, binaryPath, defaultPolicy, defaultRules,
+		defaultSource, defaultPins, defaultSysctl, filepath.Join("/etc/systemd/system", GuardUnit),
+		installState, retainedSysctl, nativePinsRecord} {
+		if _, err := os.Lstat(item); !errors.Is(err, os.ErrNotExist) {
+			existing = append(existing, item)
+		}
+	}
+	if len(existing) == 0 {
+		checks = append(checks, ProfileCheck{
+			ID:      "profile.clean_host",
+			Status:  "pass",
+			Message: "No conflicting Clatch installation artifacts found",
+		})
+	} else {
+		checks = append(checks, ProfileCheck{
+			ID:      "profile.clean_host",
+			Status:  "fail",
+			Message: fmt.Sprintf("Existing Clatch artifact(s) found: %s", existing[0]),
+			Hint:    "Run `clatch upgrade` to update an installed gateway or `clatch uninstall --yes` to clean leftover artifacts.",
+		})
+	}
 
 	if profile.Proxy != nil {
 		if _, err := os.Stat(profile.Proxy.Binary); err != nil {
@@ -82,26 +92,18 @@ func CheckInstallProfile(path string) []ProfileCheck {
 		}
 	}
 
-	rawIfaces, err := os.ReadFile(interfacesPath)
-	if err != nil {
+	if stack, err := detectNetworkStack(profile); err != nil {
 		checks = append(checks, ProfileCheck{
-			ID:      "profile.ifupdown",
-			Status:  "fail",
-			Message: fmt.Sprintf("Cannot read %s: %v", interfacesPath, err),
-			Hint:    "Debian installation requires a static IPv4 stanza in /etc/network/interfaces (ifupdown).",
-		})
-	} else if _, err := gatedInterfaces(string(rawIfaces), profile, binaryPath+" guard ensure "+configPath+" "+profile.Interface); err != nil {
-		checks = append(checks, ProfileCheck{
-			ID:      "profile.ifupdown",
+			ID:      "profile.network_stack",
 			Status:  "fail",
 			Message: err.Error(),
-			Hint:    fmt.Sprintf("Ensure %s defines one static IPv4 stanza for %s matching %s and gateway %s.", interfacesPath, profile.Interface, profile.Address, profile.Gateway),
+			Hint:    fmt.Sprintf("Ensure %s defines one static IPv4 stanza for %s matching %s and gateway %s, or use systemd-networkd.", interfacesPath, profile.Interface, profile.Address, profile.Gateway),
 		})
 	} else {
 		checks = append(checks, ProfileCheck{
-			ID:      "profile.ifupdown",
+			ID:      "profile.network_stack",
 			Status:  "pass",
-			Message: fmt.Sprintf("Static ifupdown stanza in %s matches profile", interfacesPath),
+			Message: fmt.Sprintf("Detected supported network manager: %s", stack),
 		})
 	}
 

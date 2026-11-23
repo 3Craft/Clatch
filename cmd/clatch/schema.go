@@ -1,5 +1,3 @@
-//go:build linux
-
 package main
 
 import (
@@ -19,11 +17,11 @@ type schemaEntry struct {
 var schemaCatalog = map[string]schemaEntry{
 	"install-profile": {
 		Name:        "install-profile",
-		Description: "Debian 13 installation profile passed to `clatch install plan|apply`",
+		Description: "Linux installation profile passed to `clatch install plan|apply`",
 		Schema: `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clatch.dev/schemas/install-profile.v1.json",
-  "title": "Clatch Debian Install Profile",
+  "title": "Clatch Linux Install Profile",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "interface", "address", "gateway", "lan"],
@@ -69,12 +67,12 @@ var schemaCatalog = map[string]schemaEntry{
 	},
 	"config": {
 		Name:        "config",
-		Description: "Installed Debian gateway runtime configuration",
+		Description: "Installed Linux gateway runtime configuration",
 		DefaultPath: "/etc/clatch/config.json",
 		Schema: `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://clatch.dev/schemas/config.v1.json",
-  "title": "Clatch Debian Gateway Config",
+  "title": "Clatch Linux Gateway Config",
   "type": "object",
   "additionalProperties": false,
   "required": ["interface", "diagnostic_uid", "pins", "policy", "lan", "local"],
@@ -132,7 +130,7 @@ var schemaCatalog = map[string]schemaEntry{
 	},
 	"policy-source": {
 		Name:        "policy-source",
-		Description: "Approved direct destination CIDR source for standalone Debian or OpenWrt gateways",
+		Description: "Approved direct destination CIDR source for standalone Linux or OpenWrt gateways",
 		DefaultPath: "/etc/clatch/source-policy.json",
 		Schema: `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -147,7 +145,7 @@ var schemaCatalog = map[string]schemaEntry{
       "type": "array",
       "minItems": 1,
       "items": { "type": "string" },
-      "description": "Approved direct IPv4 CIDR prefixes (must include LAN ranges on Debian and proxy server endpoints)."
+      "description": "Approved direct IPv4 CIDR prefixes (must include LAN ranges on single-arm Linux gateways and proxy server endpoints)."
     },
     "metadata": {
       "type": "object",

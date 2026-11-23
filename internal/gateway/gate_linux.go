@@ -20,7 +20,7 @@ import (
 	"clatch-gateway/internal/system"
 )
 
-const lock = "/run/lock/jdn-gateway-guard.lock"
+const lock = "/run/lock/clatch-guard.lock"
 
 func WithLock(action func() error) error {
 	return system.WithLock(lock, action)

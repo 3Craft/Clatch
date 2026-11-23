@@ -1,5 +1,3 @@
-//go:build linux
-
 package main
 
 import (
@@ -68,6 +66,8 @@ func (v versionInfo) text() string {
 	bpfState := "external"
 	if v.EmbeddedBPF {
 		bpfState = "embedded"
+	} else if v.GOOS != "linux" {
+		bpfState = "unavailable (offline verifier build)"
 	}
 	fmt.Fprintf(&out, "BPF object     %s\n", bpfState)
 	fmt.Fprintf(&out, "CLI schema     v%d\n", v.CLISchemaVersion)

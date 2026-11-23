@@ -80,7 +80,7 @@ func runInstall(args []string) (any, error) {
 			return nil, usageError("`install %s` takes at most one backup path", action)
 		}
 		if backup == "" && action != "recover" {
-			resolved, err := deploy.PendingBackup("install")
+			resolved, err := deploy.PendingBackup()
 			if err != nil {
 				return nil, err
 			}
@@ -137,6 +137,9 @@ func formatInstallResult(action, profile, backup string, result map[string]any) 
 	case "plan":
 		fmt.Fprintf(&out, "Install plan ready\nInterface      %v\nBackend        %v (active=%v)\n",
 			result["interface"], result["backend"], result["backend_active"])
+		if stack, ok := result["network_stack"].(string); ok && stack != "" {
+			fmt.Fprintf(&out, "Network stack  %s\n", stack)
+		}
 		if sha, ok := result["network_sha256"].(string); ok && len(sha) >= 12 {
 			fmt.Fprintf(&out, "Policy SHA     %s\n", sha[:12])
 		}

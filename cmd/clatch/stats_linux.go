@@ -76,7 +76,7 @@ func runStats(args []string) (any, error) {
 		}
 		allowTotal, denyTotal := summarizeCounters(counters)
 		report = statsReport{
-			Mode:       "debian",
+			Mode:       "linux",
 			Config:     options.config,
 			Interface:  cfg.Interface,
 			Pins:       cfg.Pins,

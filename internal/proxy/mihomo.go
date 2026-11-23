@@ -80,8 +80,8 @@ func validateMihomo(config policy.Config, settings map[string]any) (Mihomo, erro
 
 func validateMihomoTUN(raw any) error {
 	tun, ok := raw.(map[string]any)
-	if !ok || tun["enable"] != true || tun["device"] != "jdn-tun" || tun["stack"] != "system" {
-		return fmt.Errorf("unsupported mihomo TUN device or stack")
+	if !ok || tun["enable"] != true || tun["device"] != "clatch-tun" || tun["stack"] != "system" {
+		return fmt.Errorf("unsupported mihomo TUN device or stack (expected device: clatch-tun, stack: system)")
 	}
 	for key := range tun {
 		switch key {

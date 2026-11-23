@@ -1,11 +1,10 @@
-//go:build linux
-
 package main
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"clatch-gateway/internal/policy"
@@ -27,14 +26,15 @@ type commandSpec struct {
 	Description  string     `json:"description,omitempty"`
 	Mutating     bool       `json:"mutating"`
 	RequiresRoot bool       `json:"requires_root"`
+	LinuxOnly    bool       `json:"linux_only,omitempty"`
 	Flags        []flagSpec `json:"flags,omitempty"`
 	Examples     []string   `json:"examples,omitempty"`
-	Notes        []string   `json:"notes,omitempty"`
 }
 
 type helpManifest struct {
 	Tool             string            `json:"tool"`
 	Version          string            `json:"version"`
+	Platform         string            `json:"platform"`
 	CLISchemaVersion int               `json:"cli_schema_version"`
 	Environment      map[string]string `json:"environment"`
 	ExitCodes        map[string]string `json:"exit_codes"`
@@ -43,17 +43,18 @@ type helpManifest struct {
 
 var exitCodeDocs = map[string]string{
 	"0": "Success (for status without --strict, includes degraded/pending reports)",
-	"1": "Operation or verification check failed",
+	"1": "Operation or verification check failed (or unsupported platform)",
 	"2": "Invalid CLI arguments or unknown command",
 }
 
 var commandCatalog = []commandSpec{
 	{
-		Name:    "status",
-		Group:   "inspect",
-		Summary: "Show local guard, proxy, policy, and deployment status",
-		Usage:   []string{"clatch status [--config CONFIG] [--strict] [--json|--format text|json]"},
-		Description: "Inspect local Debian gateway state without sending external network probes. " +
+		Name:      "status",
+		Group:     "inspect",
+		Summary:   "Show local guard, proxy, policy, and deployment status",
+		Usage:     []string{"clatch status [--config CONFIG] [--strict] [--json|--format text|json]"},
+		LinuxOnly: true,
+		Description: "Inspect local Linux gateway state without sending external network probes. " +
 			"Default configuration: " + policy.DefaultConfigPath + ".",
 		Flags: []flagSpec{
 			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
@@ -68,10 +69,11 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:    "health",
-		Group:   "inspect",
-		Summary: "Run DNS and HTTPS probes",
-		Usage:   []string{"clatch health [options]"},
+		Name:      "health",
+		Group:     "inspect",
+		Summary:   "Run DNS and HTTPS probes",
+		Usage:     []string{"clatch health [options]"},
+		LinuxOnly: true,
 		Description: "Run UDP/TCP DNS probes and direct/proxied HTTPS probes. " +
 			"Reads defaults from the gateway config and its sibling health.json. Explicit flags override saved values.",
 		Flags: []flagSpec{
@@ -93,12 +95,13 @@ var commandCatalog = []commandSpec{
 	{
 		Name:    "doctor",
 		Group:   "inspect",
-		Summary: "Run non-destructive environment and installation readiness checks",
+		Summary: "Run non-destructive environment, profile, and config readiness checks",
 		Usage:   []string{"clatch doctor [--profile FILE] [--config FILE] [--openwrt FILE] [--json]"},
-		Description: "Check OS/kernel TCX readiness, required utilities, bpffs mount, privileges, " +
-			"and optional install profile or existing gateway configuration. Reports all checks at once.",
+		Description: "On Linux: check kernel TCX readiness (>= 6.6), systemd, network stack (ifupdown or systemd-networkd), " +
+			"required utilities, bpffs mount, privileges, and optional profile/config files. " +
+			"On macOS/non-Linux: validate install profiles, gateway configs, and OpenWrt configs offline.",
 		Flags: []flagSpec{
-			{Name: "--profile", Type: "path", Description: "Validate a Debian install profile JSON and host network readiness"},
+			{Name: "--profile", Type: "path", Description: "Validate an install profile JSON (and host network alignment on Linux)"},
 			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration to inspect if present"},
 			{Name: "--openwrt", Type: "path", Description: "OpenWrt configuration to validate if present"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON checklist"},
@@ -114,12 +117,12 @@ var commandCatalog = []commandSpec{
 		Group:   "inspect",
 		Summary: "Explain whether an IP address is allowed direct egress or blocked",
 		Usage:   []string{"clatch explain IP [--config CONFIG] [--openwrt CONFIG] [--live] [--json]"},
-		Description: "Evaluate longest-prefix match against the approved policy (and optionally the live kernel TCX trie) " +
-			"to explain how Clatch handles direct egress traffic to a destination IP.",
+		Description: "Evaluate longest-prefix match against the approved policy (works offline on macOS/Linux) " +
+			"and optionally compare against the live Linux kernel TCX trie (--live).",
 		Flags: []flagSpec{
-			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Debian gateway configuration"},
+			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Linux gateway configuration"},
 			{Name: "--openwrt", Type: "path", Description: "OpenWrt gateway configuration (use instead of --config)"},
-			{Name: "--live", Type: "bool", Description: "Also inspect the live kernel TCX LPM trie (requires root)"},
+			{Name: "--live", Type: "bool", Description: "Also inspect the live kernel TCX LPM trie (Linux root only)"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON verdict"},
 			{Name: "--format", Type: "string", Default: "text", Description: "Output format: text or json"},
 		},
@@ -136,8 +139,9 @@ var commandCatalog = []commandSpec{
 		Usage:        []string{"clatch stats [--config CONFIG] [--openwrt CONFIG] [--json]"},
 		Description:  "Read per-CPU TCX packet counters for the configured gateway or OpenWrt uplinks.",
 		RequiresRoot: true,
+		LinuxOnly:    true,
 		Flags: []flagSpec{
-			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Debian gateway configuration"},
+			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration"},
 			{Name: "--openwrt", Type: "path", Description: "OpenWrt gateway configuration"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON counters"},
 			{Name: "--format", Type: "string", Default: "text", Description: "Output format: text or json"},
@@ -148,9 +152,10 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:    "guard",
-		Group:   "inspect",
-		Summary: "Verify or enforce nftables and TCX protection",
+		Name:      "guard",
+		Group:     "inspect",
+		Summary:   "Verify or enforce nftables and TCX protection",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch guard verify [CONFIG] [--config CONFIG] [--json]",
 			"clatch guard ensure CONFIG IFACE",
@@ -169,6 +174,7 @@ var commandCatalog = []commandSpec{
 		Usage:        []string{"clatch guard verify [CONFIG] [--config CONFIG] [--json]"},
 		Description:  "Verify live nftables rules, pinned TCX link, approved policy digest, and TUN binding. Default config " + policy.DefaultConfigPath + ".",
 		RequiresRoot: true,
+		LinuxOnly:    true,
 		Flags: []flagSpec{
 			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON output"},
@@ -183,11 +189,12 @@ var commandCatalog = []commandSpec{
 		Description:  "Establish or verify both nftables and TCX layers before enabling IPv4 forwarding.",
 		Mutating:     true,
 		RequiresRoot: true,
+		LinuxOnly:    true,
 	},
 	{
 		Name:    "config",
 		Group:   "inspect",
-		Summary: "Validate the local configuration and approved policy",
+		Summary: "Validate a gateway configuration and approved policy (works offline)",
 		Usage:   []string{"clatch config check [CONFIG] [--config CONFIG] [--json]"},
 		Flags: []flagSpec{
 			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
@@ -198,9 +205,9 @@ var commandCatalog = []commandSpec{
 	{
 		Name:        "config check",
 		Group:       "inspect",
-		Summary:     "Validate the local configuration and approved policy",
+		Summary:     "Validate a gateway configuration and approved policy (works offline)",
 		Usage:       []string{"clatch config check [CONFIG] [--config CONFIG] [--json]"},
-		Description: "Validate the local configuration and its approved policy. Default config " + policy.DefaultConfigPath + ".",
+		Description: "Validate a gateway configuration and its approved policy without touching kernel state. Default config " + policy.DefaultConfigPath + ".",
 		Flags: []flagSpec{
 			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON output"},
@@ -210,19 +217,19 @@ var commandCatalog = []commandSpec{
 	{
 		Name:    "init",
 		Group:   "setup",
-		Summary: "Generate starter configuration and profile files",
+		Summary: "Generate starter configuration and profile files (works offline)",
 		Usage: []string{
 			"clatch init profile [--backend xray-core|mihomo|v2ray-core|v2raya] [--mode tproxy|tun] [options]",
 			"clatch init policy [--networks CIDR,...] [--output FILE]",
 			"clatch init health [--dns ADDR] [--expected-exit IP] [--conntrack] [--output FILE]",
 			"clatch init openwrt [--lan-device DEV] [--lan CIDR] [--uplink NET:DEV] [--output FILE]",
 		},
-		Description: "Generate schema-compliant starter files. For `init profile`, auto-detects local interface, IPv4 CIDR, gateway, and LAN when available.",
+		Description: "Generate schema-compliant starter files. On Linux, `init profile` auto-detects local interface, IPv4 CIDR, gateway, and LAN when available.",
 		Flags: []flagSpec{
 			{Name: "--backend", Type: "string", Default: "xray-core", Description: "Proxy backend: xray-core, mihomo, v2ray-core, or v2raya (profile)"},
 			{Name: "--mode", Type: "string", Default: "tproxy", Description: "Interception mode: tproxy or tun (profile)"},
 			{Name: "--name", Type: "string", Description: "Gateway profile name (profile)"},
-			{Name: "--interface", Type: "string", Description: "Egress Ethernet interface (auto-detected if omitted)"},
+			{Name: "--interface", Type: "string", Description: "Egress Ethernet interface (auto-detected on Linux if omitted)"},
 			{Name: "--address", Type: "cidr", Description: "Static IPv4 host CIDR, e.g. 192.0.2.10/24"},
 			{Name: "--gateway", Type: "ipv4", Description: "Upstream IPv4 gateway address"},
 			{Name: "--lan", Type: "cidr", Repeatable: true, Description: "Protected LAN IPv4 prefix (repeatable)"},
@@ -246,7 +253,7 @@ var commandCatalog = []commandSpec{
 	{
 		Name:        "schema",
 		Group:       "setup",
-		Summary:     "Print JSON Schemas for Clatch configuration files",
+		Summary:     "Print JSON Schemas for Clatch configuration files (works offline)",
 		Usage:       []string{"clatch schema [--list] [NAME]"},
 		Description: "Output Draft 2020-12 JSON Schema definitions for Clatch input files (install-profile, config, policy-source, health, openwrt).",
 		Flags: []flagSpec{
@@ -260,16 +267,17 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:    "install",
-		Group:   "manage",
-		Summary: "Install a Debian gateway with automatic rollback protection",
+		Name:      "install",
+		Group:     "manage",
+		Summary:   "Install a Linux gateway with automatic rollback protection",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch install plan PROFILE [--json]",
 			"clatch install apply PROFILE BACKUP [--json]",
 			"clatch install confirm [BACKUP] [--json]",
 			"clatch install rollback [BACKUP] [--json]",
 		},
-		Description:  "Plan, apply, confirm, or roll back a Debian 13 Clatch installation. `confirm` and `rollback` automatically resolve the active backup from /etc/clatch/clatch-install.json when BACKUP is omitted.",
+		Description:  "Plan, apply, confirm, or roll back a systemd Linux Clatch installation (supports ifupdown and systemd-networkd on Linux >= 6.6). `confirm` and `rollback` automatically resolve the active backup from /etc/clatch/clatch-install.json when BACKUP is omitted.",
 		Mutating:     true,
 		RequiresRoot: true,
 		Flags: []flagSpec{
@@ -286,28 +294,43 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:    "migrate",
-		Group:   "manage",
-		Summary: "Adopt a legacy Python Debian gateway",
-		Usage: []string{
-			"clatch migrate plan [--json]",
-			"clatch migrate apply BACKUP [--json]",
-			"clatch migrate confirm [BACKUP] [--json]",
-			"clatch migrate rollback [BACKUP] [--json]",
-		},
-		Description:  "Plan, apply, confirm, or roll back adoption of a legacy /etc/jdn-gateway installation. `confirm` and `rollback` resolve the recorded backup automatically if omitted.",
+		Name:         "upgrade",
+		Group:        "manage",
+		Summary:      "Upgrade the installed Clatch binary safely with automatic verification",
+		Usage:        []string{"clatch upgrade [--config CONFIG] [--backup DIR] [--json]"},
+		Description:  "Replace /usr/local/sbin/clatch with the running binary after verifying guard state, backing up the previous binary and rolling back automatically if verification fails.",
 		Mutating:     true,
 		RequiresRoot: true,
+		LinuxOnly:    true,
 		Flags: []flagSpec{
-			{Name: "--backup", Type: "path", Description: "Absolute backup directory path (alternative to positional BACKUP)"},
+			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
+			{Name: "--backup", Type: "path", Description: "Backup directory for previous binary (default /root/clatch-upgrade-<timestamp>)"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON output"},
 			{Name: "--format", Type: "string", Default: "text", Description: "Output format: text or json"},
 		},
 	},
 	{
-		Name:    "whitelist",
-		Group:   "manage",
-		Summary: "Inspect or change the native v2rayA whitelist",
+		Name:         "uninstall",
+		Group:        "manage",
+		Summary:      "Preview or cleanly remove a Clatch gateway installation",
+		Usage:        []string{"clatch uninstall [--config CONFIG] [--keep-config] [--yes] [--json]"},
+		Description:  "Without --yes, previews all services, hooks, TCX links, nftables tables, and files that will be removed. Pass --yes to perform removal.",
+		Mutating:     true,
+		RequiresRoot: true,
+		LinuxOnly:    true,
+		Flags: []flagSpec{
+			{Name: "--config", Type: "path", Default: policy.DefaultConfigPath, Description: "Gateway configuration file"},
+			{Name: "--keep-config", Type: "bool", Description: "Keep /etc/clatch configuration and policy files"},
+			{Name: "--yes", Type: "bool", Description: "Execute removal (omit for dry-run preview)"},
+			{Name: "--json", Type: "bool", Description: "Write structured JSON output"},
+			{Name: "--format", Type: "string", Default: "text", Description: "Output format: text or json"},
+		},
+	},
+	{
+		Name:      "whitelist",
+		Group:     "manage",
+		Summary:   "Inspect or change the native v2rayA whitelist",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch whitelist show [options]",
 			"clatch whitelist add CIDR|IP... [--apply] [options]",
@@ -341,9 +364,10 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:    "policy",
-		Group:   "manage",
-		Summary: "Stage, commit, or roll back an approved standalone policy",
+		Name:      "policy",
+		Group:     "manage",
+		Summary:   "Stage, commit, or roll back an approved standalone policy",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch policy stage CONFIG DIRECTORY SOURCE [--json]",
 			"clatch policy commit CONFIG DIRECTORY [--json]",
@@ -363,19 +387,23 @@ var commandCatalog = []commandSpec{
 	{
 		Name:    "openwrt",
 		Group:   "manage",
-		Summary: "Manage guarded OpenWrt uplinks and TPROXY capture",
+		Summary: "Validate, install, and manage guarded OpenWrt uplinks",
 		Usage: []string{
+			"clatch openwrt check [CONFIG] [--config CONFIG] [--json]",
+			"clatch openwrt install [--config CONFIG] [--proto-dir DIR] [--dry-run] [--json]",
 			"clatch openwrt status [CONFIG] [--config CONFIG] [--json]",
 			"clatch openwrt prepare CONFIG LOGICAL DEVICE [--json]",
 			"clatch openwrt verify CONFIG LOGICAL DEVICE [--json]",
 			"clatch openwrt tproxy-start CONFIG PORT [--json]",
 			"clatch openwrt tproxy-stop [--json]",
 		},
-		Description:  "Inspect, prepare, verify, or capture traffic on guarded OpenWrt IPv4 WAN uplinks.",
+		Description:  "Validate OpenWrt configs (`check` works offline on macOS/Linux), install netifd protocol handlers (`install`), inspect status, and manage guarded WAN uplinks.",
 		Mutating:     true,
 		RequiresRoot: true,
 		Flags: []flagSpec{
-			{Name: "--config", Type: "path", Default: "/etc/clatch/openwrt.json", Description: "OpenWrt configuration file (for status)"},
+			{Name: "--config", Type: "path", Default: "/etc/clatch/openwrt.json", Description: "OpenWrt configuration file (for check, status, install)"},
+			{Name: "--proto-dir", Type: "path", Default: "/lib/netifd/proto", Description: "Target netifd proto directory (for install)"},
+			{Name: "--dry-run", Type: "bool", Description: "Preview protocol handler files without writing (for install)"},
 			{Name: "--json", Type: "bool", Description: "Write structured JSON output"},
 			{Name: "--format", Type: "string", Default: "text", Description: "Output format: text or json"},
 		},
@@ -385,7 +413,8 @@ var commandCatalog = []commandSpec{
 		Group:       "manage",
 		Summary:     "Run restricted ping or traceroute",
 		Usage:       []string{"clatch diagnostic ping|traceroute CONFIG [options]"},
-		Description: "Run ping or traceroute under the restricted diagnostic UID allowed by the egress guard.",
+		Description: "Run ping or traceroute under the restricted diagnostic account allowed by the egress guard.",
+		LinuxOnly:   true,
 	},
 	{
 		Name:        "version",
@@ -399,24 +428,17 @@ var commandCatalog = []commandSpec{
 		},
 	},
 	{
-		Name:         "legacy-guard",
-		Group:        "advanced",
-		Summary:      "Compatibility entry point for installed gateway wrappers",
-		Usage:        []string{"clatch legacy-guard [--config CONFIG] ACTION"},
-		Mutating:     true,
-		RequiresRoot: true,
-	},
-	{
 		Name:        "nft",
 		Group:       "advanced",
-		Summary:     "Render the single-arm IPv4 nftables guard ruleset",
+		Summary:     "Render the single-arm IPv4 nftables guard ruleset (works offline)",
 		Usage:       []string{"clatch nft render CONFIG [TUN_IFINDEX] [--json]"},
 		Description: "Render the deterministic nftables ruleset from the gateway config and approved policy.",
 	},
 	{
-		Name:    "native",
-		Group:   "advanced",
-		Summary: "Inspect or drive native v2rayA integration hooks",
+		Name:      "native",
+		Group:     "advanced",
+		Summary:   "Inspect or drive native v2rayA integration hooks",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch native inspect|bind|unbind CONFIG",
 			"clatch native hook --stage STAGE [--transparent-type MODE] [--v2raya-confdir DIR] [--config CONFIG] [--check]",
@@ -431,6 +453,7 @@ var commandCatalog = []commandSpec{
 		Usage:        []string{"clatch tproxy start CONFIG [PORT]", "clatch tproxy stop"},
 		Mutating:     true,
 		RequiresRoot: true,
+		LinuxOnly:    true,
 	},
 	{
 		Name:         "managed-tun",
@@ -439,11 +462,13 @@ var commandCatalog = []commandSpec{
 		Usage:        []string{"clatch managed-tun start CONFIG", "clatch managed-tun stop"},
 		Mutating:     true,
 		RequiresRoot: true,
+		LinuxOnly:    true,
 	},
 	{
-		Name:    "bpf",
-		Group:   "advanced",
-		Summary: "Low-level TCX eBPF link, map, and counter operations",
+		Name:      "bpf",
+		Group:     "advanced",
+		Summary:   "Low-level TCX eBPF link, map, and counter operations",
+		LinuxOnly: true,
 		Usage: []string{
 			"clatch bpf attach|attach-wan IFACE OBJECT PINS POLICY UID 0 [TUN]",
 			"clatch bpf prepare OBJECT PINS POLICY UID 0 [TUN]",
@@ -474,6 +499,7 @@ func buildHelpManifest(topic string) (any, bool) {
 		return helpManifest{
 			Tool:             "clatch",
 			Version:          version,
+			Platform:         runtime.GOOS + "/" + runtime.GOARCH,
 			CLISchemaVersion: 1,
 			Environment: map[string]string{
 				"CLATCH_FORMAT": "Default output format when --json/--format is omitted (text or json)",
@@ -489,6 +515,7 @@ func buildHelpManifest(topic string) (any, bool) {
 	return map[string]any{
 		"tool":               "clatch",
 		"version":            version,
+		"platform":           runtime.GOOS + "/" + runtime.GOARCH,
 		"cli_schema_version": 1,
 		"exit_codes":         exitCodeDocs,
 		"command":            spec,
@@ -498,25 +525,33 @@ func buildHelpManifest(topic string) (any, bool) {
 func renderRootHelp() string {
 	var out strings.Builder
 	out.WriteString("Usage: clatch COMMAND [options]\n\n")
+	if runtime.GOOS != "linux" {
+		fmt.Fprintf(&out, "Platform note: running offline verifier on %s/%s.\n", runtime.GOOS, runtime.GOARCH)
+		out.WriteString("Offline commands: doctor, explain, config check, nft render, init, schema, openwrt check, version, help.\n\n")
+	}
 	out.WriteString("Inspect & diagnose\n")
-	writeGroupHelp(&out, "inspect", []string{"status", "health", "doctor", "explain", "stats", "guard verify", "config check", "version"})
+	writeGroupHelp(&out, []string{"status", "health", "doctor", "explain", "stats", "guard verify", "config check", "version"})
 	out.WriteString("\nSetup & schemas\n")
-	writeGroupHelp(&out, "setup", []string{"init", "schema"})
+	writeGroupHelp(&out, []string{"init", "schema"})
 	out.WriteString("\nManage a gateway\n")
-	writeGroupHelp(&out, "manage", []string{"install", "migrate", "whitelist", "policy", "openwrt", "diagnostic"})
-	out.WriteString("\nAdvanced commands: bpf, nft, native, tproxy, managed-tun, legacy-guard.\n")
+	writeGroupHelp(&out, []string{"install", "upgrade", "uninstall", "whitelist", "policy", "openwrt", "diagnostic"})
+	out.WriteString("\nAdvanced commands: bpf, nft, native, tproxy, managed-tun.\n")
 	out.WriteString("Global output options: --json, --format text|json, or CLATCH_FORMAT=json.\n")
 	out.WriteString("Run `clatch COMMAND --help` for details, or `clatch help --json` for a machine-readable catalog.\n")
 	return out.String()
 }
 
-func writeGroupHelp(out *strings.Builder, _ string, names []string) {
+func writeGroupHelp(out *strings.Builder, names []string) {
 	for _, name := range names {
 		spec, ok := commandIndex[name]
 		if !ok {
 			continue
 		}
-		fmt.Fprintf(out, "  %-14s %s\n", spec.Name, spec.Summary)
+		summary := spec.Summary
+		if runtime.GOOS != "linux" && spec.LinuxOnly {
+			summary += " [Linux only]"
+		}
+		fmt.Fprintf(out, "  %-14s %s\n", spec.Name, summary)
 	}
 }
 
@@ -533,6 +568,9 @@ func renderCommandHelp(spec commandSpec) string {
 		fmt.Fprintf(&out, "\n%s\n", spec.Description)
 	} else if spec.Summary != "" {
 		fmt.Fprintf(&out, "\n%s.\n", spec.Summary)
+	}
+	if spec.LinuxOnly && runtime.GOOS != "linux" {
+		fmt.Fprintf(&out, "\nPlatform note: this command requires Linux (current host: %s/%s).\n", runtime.GOOS, runtime.GOARCH)
 	}
 	if len(spec.Flags) > 0 {
 		out.WriteString("\nOptions:\n")

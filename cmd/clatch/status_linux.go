@@ -133,13 +133,9 @@ func localStatus(path string, explicit bool) (statusReport, error) {
 	} else if report.PendingPolicy != nil || report.Deployment != nil && report.Deployment.State != "confirmed" {
 		report.State = "pending"
 		if report.Deployment != nil && report.Deployment.State != "confirmed" {
-			action := "install"
-			if report.Deployment.Kind == "migration" {
-				action = "migrate"
-			}
 			report.NextSteps = append(report.NextSteps,
-				fmt.Sprintf("clatch %s confirm %s", action, report.Deployment.Backup),
-				fmt.Sprintf("clatch %s rollback %s", action, report.Deployment.Backup),
+				fmt.Sprintf("clatch install confirm %s", report.Deployment.Backup),
+				fmt.Sprintf("clatch install rollback %s", report.Deployment.Backup),
 			)
 		}
 		if report.PendingPolicy != nil {

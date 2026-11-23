@@ -18,13 +18,15 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: Build eBPF object and release binaries
+      - name: Build eBPF object, Linux binaries, and macOS offline verifiers
         run: |
           make bpf-container
           make -j2 VERSION="${GITHUB_REF_NAME}" COMMIT="${GITHUB_SHA::7}"
-          (cd dist && sha256sum clatch-linux-amd64 clatch-linux-arm64 > SHA256SUMS)
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA::7}" -o dist/clatch-darwin-arm64 ./cmd/clatch
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="-s -w -X main.version=${GITHUB_REF_NAME} -X main.commit=${GITHUB_SHA::7}" -o dist/clatch-darwin-amd64 ./cmd/clatch
+          (cd dist && sha256sum clatch-linux-amd64 clatch-linux-arm64 clatch-darwin-arm64 clatch-darwin-amd64 > SHA256SUMS)
 
-      - name: Smoke-test release binary
+      - name: Smoke-test Linux release binary
         run: |
           ./dist/clatch-linux-amd64 version --json
           ./dist/clatch-linux-amd64 help --json > /dev/null
@@ -36,4 +38,6 @@ jobs:
           files: |
             dist/clatch-linux-amd64
             dist/clatch-linux-arm64
+            dist/clatch-darwin-arm64
+            dist/clatch-darwin-amd64
             dist/SHA256SUMS

@@ -14,6 +14,17 @@ import (
 	"strings"
 )
 
+func parseDefaultRoute(raw []byte, ifaceName, upstream string) error {
+	var routes []struct {
+		Gateway string `json:"gateway"`
+		Device  string `json:"dev"`
+	}
+	if json.Unmarshal(raw, &routes) != nil || len(routes) != 1 || routes[0].Device != ifaceName || routes[0].Gateway != upstream {
+		return fmt.Errorf("expected a single IPv4 default route matching the static profile")
+	}
+	return nil
+}
+
 func (p *installPlan) addNew(path string, data []byte, mode os.FileMode) error {
 	state, err := readFile(path)
 	if err != nil {
@@ -34,13 +45,17 @@ func (p *installPlan) renderInstall() error {
 	gate := binaryPath + " guard ensure " + configPath + " " + p.Config.Interface
 	netUnit := strings.ReplaceAll(p.Config.Interface, "-", `\x2d`)
 	device := "sys-subsystem-net-devices-" + netUnit + ".device"
+	networkServices := "networking.service"
+	if p.NetworkStack == "systemd-networkd" {
+		networkServices = "systemd-networkd.service"
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Clatch independent nftables and TCX egress guard
 DefaultDependencies=no
 Requires=%[1]s
 After=local-fs.target systemd-sysctl.service systemd-modules-load.service %[1]s
 Wants=network-pre.target
-Before=network-pre.target networking.service nftables.service %[2]s shutdown.target
+Before=network-pre.target %[4]s nftables.service %[2]s shutdown.target
 Conflicts=shutdown.target
 [Service]
 Type=oneshot
@@ -51,7 +66,7 @@ ExecReload=%[3]s
 TimeoutStartSec=90
 [Install]
 WantedBy=sysinit.target
-`, device, p.Service, gate)
+`, device, p.Service, gate, networkServices)
 	dependencies := "[Unit]\nRequires=" + GuardUnit + "\nAfter=" + GuardUnit + "\n"
 	backend := dependencies + "[Service]\nExecStartPre=+" + gate + "\n"
 	if p.Config.Proxy != nil {
@@ -74,30 +89,49 @@ WantedBy=sysinit.target
 		mode os.FileMode
 	}{
 		{configPath, append(config, '\n'), 0600},
-		{legacyGuardPath, wrapper("legacy-guard"), 0755},
 		{"/usr/local/bin/ping", wrapper("diagnostic ping " + configPath), 0755},
 		{"/usr/local/bin/traceroute", wrapper("diagnostic traceroute " + configPath), 0755},
 		{defaultSysctl, []byte(strings.Join(p.sysctlKeys(), "=0\n") + "=0\n"), 0644},
 		{filepath.Join("/etc/systemd/system", GuardUnit), []byte(unit), 0644},
-		{installDropIn("networking.service"), []byte(dependencies), 0644},
-		{installDropIn("ifup@" + netUnit + ".service"), []byte(dependencies), 0644},
 		{installDropIn("nftables.service"), []byte(nft), 0644},
 		{installDropIn(p.Service), []byte(backend), 0644},
+	}
+	if p.NetworkStack == "systemd-networkd" {
+		files = append(files, struct {
+			path string
+			data []byte
+			mode os.FileMode
+		}{installDropIn("systemd-networkd.service"), []byte(dependencies), 0644})
+	} else {
+		files = append(files,
+			struct {
+				path string
+				data []byte
+				mode os.FileMode
+			}{installDropIn("networking.service"), []byte(dependencies), 0644},
+			struct {
+				path string
+				data []byte
+				mode os.FileMode
+			}{installDropIn("ifup@" + netUnit + ".service"), []byte(dependencies), 0644},
+		)
 	}
 	for _, file := range files {
 		if err := p.addNew(file.path, file.data, file.mode); err != nil {
 			return err
 		}
 	}
-	interfaces, err := readFile(interfacesPath)
-	if err != nil {
-		return err
+	if p.NetworkStack == "ifupdown" {
+		interfaces, err := readFile(interfacesPath)
+		if err != nil {
+			return err
+		}
+		updated, err := gatedInterfaces(string(interfaces.Data), p.Profile, gate)
+		if err != nil {
+			return err
+		}
+		p.Changes = append(p.Changes, change{interfacesPath, interfaces, fileState{Exists: true, Mode: interfaces.Mode, Data: []byte(updated)}})
 	}
-	updated, err := gatedInterfaces(string(interfaces.Data), p.Profile, gate)
-	if err != nil {
-		return err
-	}
-	p.Changes = append(p.Changes, change{interfacesPath, interfaces, fileState{Exists: true, Mode: interfaces.Mode, Data: []byte(updated)}})
 	if p.Config.IsNative() {
 		return p.nativeFiles()
 	}
@@ -149,9 +183,9 @@ func (p installPlan) sysctlKeys() []string {
 	return keys
 }
 
-func gatedInterfaces(text string, profile installProfile, gate string) (string, error) {
-	if strings.Contains(text, "gateway-guard") || strings.Contains(text, "clatch guard") {
-		return "", fmt.Errorf("existing ifupdown guard requires explicit migration")
+func gatedInterfaces(text string, profile InstallProfile, gate string) (string, error) {
+	if strings.Contains(text, "clatch guard") {
+		return "", fmt.Errorf("existing ifupdown guard already present in %s", interfacesPath)
 	}
 	lines := strings.Split(text, "\n")
 	start, end := -1, len(lines)

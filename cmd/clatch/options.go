@@ -1,5 +1,3 @@
-//go:build linux
-
 package main
 
 import (
@@ -8,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"clatch-gateway/internal/policy"
@@ -164,6 +163,10 @@ func usageError(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", errUsage, fmt.Sprintf(format, args...))
 }
 
+func unsupportedPlatformError(command string) error {
+	return fmt.Errorf("%w: %q is not supported on %s/%s", errUnsupportedPlatform, command, runtime.GOOS, runtime.GOARCH)
+}
+
 func checkReport(options inspectionOptions, data map[string]any, text string, err error) (inspection, error) {
 	if data == nil {
 		data = make(map[string]any)
@@ -196,6 +199,13 @@ func classifyError(err error, topic string) errorDetail {
 	lower := strings.ToLower(msg)
 	detail := errorDetail{Code: "OPERATION_FAILED", Message: msg}
 	switch {
+	case errors.Is(err, errUnsupportedPlatform):
+		detail.Code = "UNSUPPORTED_PLATFORM"
+		detail.Hint = fmt.Sprintf(
+			"Available offline on %s/%s: config check, nft render, explain, init, schema, doctor, openwrt check, version, help. Run runtime/kernel commands on Linux.",
+			runtime.GOOS, runtime.GOARCH,
+		)
+		detail.NextSteps = []string{"clatch --help", "clatch doctor"}
 	case errors.Is(err, errUsage):
 		detail.Code = "INVALID_ARGUMENTS"
 		if topic != "" && commandHelp(topic) != "" {
@@ -222,4 +232,34 @@ func classifyError(err error, topic string) errorDetail {
 		detail.NextSteps = []string{"clatch schema --list"}
 	}
 	return detail
+}
+
+// splitSimpleFlags extracts --json / --format flags from positional subcommands.
+func splitSimpleFlags(name string, args []string) ([]string, bool, error) {
+	var options inspectionOptions
+	flags := options.flags(name)
+	var positional, flagArgs []string
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if strings.HasPrefix(arg, "-") {
+			flagArgs = append(flagArgs, arg)
+			if (arg == "--format" || arg == "-format" || arg == "--config" || arg == "-config") && i+1 < len(args) {
+				i++
+				flagArgs = append(flagArgs, args[i])
+			}
+			continue
+		}
+		positional = append(positional, arg)
+	}
+	if err := flags.Parse(flagArgs); err != nil {
+		return nil, false, usageError("%v", err)
+	}
+	if err := options.resolveFormat(flags); err != nil {
+		return nil, false, err
+	}
+	return positional, options.json, nil
 }

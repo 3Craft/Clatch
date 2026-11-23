@@ -11,8 +11,8 @@ import (
 )
 
 var managedTUN = mode{
-	table: "jdn_mihomo_tun", priority: "10049", routeDevice: device.ManagedTUN,
-	statePath: "/run/jdn-mihomo-tun.json",
+	table: "clatch_mihomo_tun", priority: "10049", routeDevice: device.ManagedTUN,
+	statePath: "/run/clatch-mihomo-tun.json",
 }
 
 func StartManagedTUN(configPath string) (state, error) {
@@ -61,7 +61,7 @@ table inet %[1]s {
   meta nfproto != ipv4 return
   meta mark & 0x80 != 0 return
   ip daddr @direct4 return
-  meta l4proto { tcp, udp } counter meta mark set 0x40 comment "jdn-tun-route-lan"
+  meta l4proto { tcp, udp } counter meta mark set 0x40 comment "clatch-tun-route-lan"
  }
  chain output {
   type route hook output priority mangle; policy accept;
@@ -69,7 +69,7 @@ table inet %[1]s {
   meta mark & 0x80 != 0 return
   ip daddr 127.0.0.0/8 return
   ip daddr @direct4 return
-  meta l4proto { tcp, udp } counter meta mark set 0x40 comment "jdn-tun-route-host"
+  meta l4proto { tcp, udp } counter meta mark set 0x40 comment "clatch-tun-route-host"
  }
 }
 `, managedTUN.table, direct, iface)

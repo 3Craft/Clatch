@@ -16,6 +16,10 @@ func runOpenWrt(args []string) (any, error) {
 		return nil, errUsage
 	}
 	switch args[0] {
+	case "check":
+		return runOpenWrtCheck(args[1:])
+	case "install":
+		return runOpenWrtInstall(args[1:])
 	case "status":
 		return runOpenWrtStatus(args[1:])
 	case "prepare":
@@ -84,6 +88,56 @@ func runOpenWrt(args []string) (any, error) {
 	return nil, errUsage
 }
 
+func runOpenWrtInstall(args []string) (any, error) {
+	var options inspectionOptions
+	var protoDir string
+	var dryRun bool
+	flags := options.flags("openwrt install")
+	flags.StringVar(&protoDir, "proto-dir", "/lib/netifd/proto", "netifd protocol handler directory")
+	flags.BoolVar(&dryRun, "dry-run", false, "preview files without writing")
+	if err := flags.Parse(args); err != nil {
+		return nil, usageError("%v", err)
+	}
+	if flags.NArg() != 0 {
+		return nil, usageError("unexpected arguments")
+	}
+	if err := options.resolve(flags, ""); err != nil {
+		return nil, err
+	}
+	if !options.explicit {
+		options.config = openwrt.DefaultConfigPath
+	}
+	result, err := openwrt.Install(openwrt.InstallOptions{
+		ConfigPath: options.config,
+		ProtoDir:   protoDir,
+		DryRun:     dryRun,
+	})
+	if err != nil {
+		return nil, err
+	}
+	var out strings.Builder
+	if result.Applied {
+		fmt.Fprintln(&out, "OpenWrt protocol handlers installed")
+	} else {
+		fmt.Fprintln(&out, "OpenWrt install preview (dry run)")
+	}
+	fmt.Fprintf(&out, "Configuration  %s\nProto dir      %s\n", result.Config, result.ProtoDir)
+	for _, f := range result.Files {
+		fmt.Fprintf(&out, "File           %s\n", f)
+	}
+	if len(result.NextSteps) > 0 {
+		out.WriteString("\nNext steps:\n")
+		for _, step := range result.NextSteps {
+			fmt.Fprintf(&out, "  %s\n", step)
+		}
+	}
+	res := inspection{value: result}
+	if !options.json {
+		res.text = out.String()
+	}
+	return res, nil
+}
+
 func runOpenWrtStatus(args []string) (any, error) {
 	options, err := readOptions("openwrt status", args, true)
 	if err != nil {
@@ -136,34 +190,4 @@ func formatOpenWrtStatus(r openwrt.StatusReport) string {
 		fmt.Fprintf(&out, "Issue          %s\n", issue)
 	}
 	return out.String()
-}
-
-// splitSimpleFlags extracts --json / --format flags from positional subcommands.
-func splitSimpleFlags(name string, args []string) ([]string, bool, error) {
-	var options inspectionOptions
-	flags := options.flags(name)
-	var positional, flagArgs []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			positional = append(positional, args[i+1:]...)
-			break
-		}
-		if strings.HasPrefix(arg, "-") {
-			flagArgs = append(flagArgs, arg)
-			if (arg == "--format" || arg == "-format" || arg == "--config" || arg == "-config") && i+1 < len(args) {
-				i++
-				flagArgs = append(flagArgs, args[i])
-			}
-			continue
-		}
-		positional = append(positional, arg)
-	}
-	if err := flags.Parse(flagArgs); err != nil {
-		return nil, false, usageError("%v", err)
-	}
-	if err := options.resolveFormat(flags); err != nil {
-		return nil, false, err
-	}
-	return positional, options.json, nil
 }

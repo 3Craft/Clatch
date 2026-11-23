@@ -30,15 +30,15 @@ func RequireUnusedGuardTable() error {
 		return err
 	}
 	for _, object := range present.Objects {
-		if object.Table.Family == "inet" && object.Table.Name == tableName {
-			return fmt.Errorf("an existing nftables guard requires explicit migration or recovery")
+		if object.Table.Family == "inet" && object.Table.Name == TableName {
+			return fmt.Errorf("an existing nftables guard table (%s) requires review or uninstall", TableName)
 		}
 	}
 	return nil
 }
 
 func Apply(rules, rulesPath, fingerprintPath string) error {
-	return ApplyTable(tableName, rules, rulesPath, fingerprintPath)
+	return ApplyTable(TableName, rules, rulesPath, fingerprintPath)
 }
 
 func ApplyTable(table, rules, rulesPath, fingerprintPath string) error {
@@ -61,7 +61,7 @@ func ApplyTable(table, rules, rulesPath, fingerprintPath string) error {
 }
 
 func Verify(rules, fingerprintPath string) error {
-	return VerifyTable(tableName, rules, fingerprintPath)
+	return VerifyTable(TableName, rules, fingerprintPath)
 }
 
 func VerifyTable(table, rules, fingerprintPath string) error {

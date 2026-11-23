@@ -22,22 +22,28 @@ dependencies retain their upstream licenses.
 - **Linux kernel 6.6 or newer** with pinned TCX eBPF support and `bpffs`.
 - **Host utilities**: `nft`, `ip`, `tc`, `sysctl` (plus `conntrack` for optional
   `clatch health --conntrack`).
-- **Debian 13 target** (automated installer): static IPv4 `ifupdown`
-  (`/etc/network/interfaces`), `systemd`, `iputils-ping`, `traceroute`, and one
-  supported backend (`xray-core`, `v2ray-core`, `mihomo` TPROXY/TUN, or native
-  `v2rayA` TPROXY/TUN).
+- **Linux systemd gateway target** (Debian 13+, Ubuntu 24.04+/26.04+, etc.):
+  static IPv4 configured via either `ifupdown` (`/etc/network/interfaces`) or
+  `systemd-networkd` / Netplan, `systemd`, `ping`, `traceroute`, and one
+  supported backend (`xray-core`, `v2ray-core`, `mihomo` TPROXY/TUN with
+  `tun.device: clatch-tun`, or native `v2rayA` TPROXY/TUN).
 - **OpenWrt target** (25.12+): `netifd`, `firewall4`, `ip-full`, `tc-tiny`, and
   optionally `kmod-nft-tproxy` for LAN capture.
+- **macOS / non-Linux offline verifier**: `clatch` also builds natively on macOS
+  (`make macos`) for offline config/profile validation, nftables rendering, LPM
+  explanation, schema export, and starter generation; Linux-only runtime commands
+  display a clear platform hint.
 - **IPv4-only egress**: public IPv6 egress is intentionally disabled.
 
 Run `clatch doctor` on any target host to verify all prerequisites in one pass.
 
-## Quickstart (Debian 13)
+## Quickstart (Linux systemd gateway)
 
-Prepare the static IPv4 `ifupdown` interface and your proxy service first, then:
+Prepare your static IPv4 interface (`ifupdown` or `systemd-networkd`) and proxy
+service first, then:
 
 ```sh
-# 1. Generate starter profile and policy files (auto-detects local IPv4 network)
+# 1. Generate starter profile and policy files (auto-detects local IPv4 network on Linux)
 ./clatch-linux-amd64 init profile --backend xray-core --output /root/gateway-profile.json
 ./clatch-linux-amd64 init policy --output /root/gateway-policy.json
 
@@ -58,7 +64,7 @@ clatch install confirm
 
 Example templates for all supported backends are provided in `deploy/debian/`:
 - [standalone.example.json](deploy/debian/standalone.example.json) (Xray TPROXY)
-- [mihomo-tun.example.json](deploy/debian/mihomo-tun.example.json) (Mihomo managed TUN)
+- [mihomo-tun.example.json](deploy/debian/mihomo-tun.example.json) (Mihomo managed TUN, `device: clatch-tun`)
 - [v2raya.example.json](deploy/debian/v2raya.example.json) (Native v2rayA)
 - [policy.example.json](deploy/debian/policy.example.json) (Standalone CIDR policy source)
 - [health.example.json](deploy/debian/health.example.json) (Health check defaults)
@@ -70,8 +76,17 @@ verify DNS before confirming. To roll back manually (even after confirmation):
 /root/clatch-install/clatch-recover install rollback /root/clatch-install
 ```
 
-If you are adopting an existing legacy Python `/etc/jdn-gateway/` deployment,
-see [docs/legacy-migration.md](docs/legacy-migration.md).
+### Upgrade and Uninstall
+
+```sh
+# Safely upgrade /usr/local/sbin/clatch (backs up previous binary and verifies guard)
+./clatch-linux-amd64 upgrade
+
+# Preview uninstall actions (dry run), then remove cleanly with --yes
+clatch uninstall
+clatch uninstall --yes
+clatch uninstall --keep-config --yes
+```
 
 ## Inspect, Diagnose, and Operate
 
@@ -146,12 +161,18 @@ clatch policy commit /etc/clatch/config.json /root/policy-tx
 - **Self-describing CLI**:
   - `clatch version --json` reports build version, target, and embedded BPF status.
   - `clatch help --json` (and `clatch help COMMAND --json`) exports the full
-    command catalog, flags, defaults, mutating/root metadata, and exit codes.
+    command catalog, flags, defaults, mutating/root/platform metadata, and exit codes.
   - `clatch schema --list` and `clatch schema <NAME>` print Draft 2020-12 JSON
     Schemas for `install-profile`, `config`, `policy-source`, `health`, and `openwrt`.
+- **Cross-platform offline verifier (macOS)**:
+  - Run `config check`, `nft render`, `explain` (offline), `init`, `schema`,
+    `doctor`, `openwrt check`, `version`, and `help` natively on macOS before
+    deploying to Linux. Linux-only runtime commands exit cleanly with an
+    `UNSUPPORTED_PLATFORM` hint.
 - **Exit codes**: `0` succeeded (`status` without `--strict` returns `0` even on
   degraded reports; add `--strict` to fail non-healthy states), `1` check or
-  operation failed, `2` invalid arguments or unknown command.
+  operation failed (or unsupported platform), `2` invalid arguments or unknown
+  command.
 
 See [docs/agent-guide.md](docs/agent-guide.md) for a concise AI agent playbook.
 
@@ -162,21 +183,22 @@ kernel with pinned TCX egress support. It is intentionally IPv4-only. Run the
 proxy as a separate service and add each proxy server endpoint to the direct
 policy.
 
-1. Generate or copy configuration files:
+1. Install the release binary as `/usr/sbin/clatch`, then generate and validate
+   the configuration files:
    ```sh
    clatch init openwrt --lan-device br-lan --lan 192.168.56.0/24 --uplink wan:eth1 --output /etc/clatch/openwrt.json
    clatch init policy --networks 198.18.0.1/32,198.18.0.3/32 --output /etc/clatch/policy.json
+   clatch openwrt check
    ```
    See also [deploy/openwrt/openwrt.example.json](deploy/openwrt/openwrt.example.json)
    and [deploy/openwrt/policy.example.json](deploy/openwrt/policy.example.json).
    Use `unmanaged_egress_devices` for interfaces whose egress remains under the
    existing firewall (for example, a primary uplink during a guarded backup trial).
-2. Install the release binary as `/usr/sbin/clatch` and place `deploy/openwrt/clatch_static.sh`
-   in `/lib/netifd/proto/`. For DHCP uplinks, generate `clatch_dhcp.sh`:
+2. Install the embedded `netifd` protocol handlers (`clatch_static.sh` and
+   auto-generated `clatch_dhcp.sh`):
    ```sh
-   tmp=$(mktemp /lib/netifd/proto/.clatch-dhcp.XXXXXX)
-   sh deploy/openwrt/generate-dhcp.sh > "$tmp" && chmod 0755 "$tmp" &&
-       mv "$tmp" /lib/netifd/proto/clatch_dhcp.sh
+   clatch openwrt install --dry-run
+   clatch openwrt install
    ```
 3. From the local console, configure each external IPv4 interface with
    `proto=clatch_static` or `proto=clatch_dhcp` and its exact UCI `device`.
@@ -199,11 +221,13 @@ policy.
 ## Build from Source
 
 Go 1.26 or newer builds both static Linux release binaries (`CGO_ENABLED=0`,
-embedded eBPF object). Rebuilding the eBPF object itself requires Clang with a
-BPF target, Linux UAPI headers, and `libbpf` headers.
+embedded eBPF object) and the macOS offline verifier (`make macos`). Rebuilding
+the eBPF object itself requires Clang with a BPF target, Linux UAPI headers, and
+`libbpf` headers.
 
 ```sh
-make -j2
+make -j2          # Linux amd64 & arm64 binaries with embedded eBPF
+make macos        # Native macOS offline verifier binary
 make test
 ```
 
@@ -215,8 +239,8 @@ make bpf-container
 make -j2 VERSION=v0.1.0
 ```
 
-Release artifacts are written to `dist/clatch-linux-amd64` and
-`dist/clatch-linux-arm64`.
+Release artifacts are written to `dist/clatch-linux-amd64`,
+`dist/clatch-linux-arm64`, and `dist/clatch-darwin-<arch>`.
 
 ## Verification and Low-Level Tools
 

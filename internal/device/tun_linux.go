@@ -18,8 +18,8 @@ import (
 )
 
 const (
-	ManagedTUN = "jdn-tun"
-	statePath  = "/run/jdn-gateway-tun.json"
+	ManagedTUN = "clatch-tun"
+	statePath  = "/run/clatch-tun.json"
 )
 
 type Identity struct {

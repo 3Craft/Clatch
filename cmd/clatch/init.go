@@ -1,12 +1,9 @@
-//go:build linux
-
 package main
 
 import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -104,7 +101,7 @@ func runInitProfile(args []string) (any, error) {
 		*gw = "192.0.2.1"
 	}
 	if *name == "" {
-		*name = fmt.Sprintf("debian-%s-gateway", *backend)
+		*name = fmt.Sprintf("clatch-%s-gateway", *backend)
 	}
 
 	doc := initProfileDoc{
@@ -326,7 +323,8 @@ func runInitOpenWrt(args []string) (any, error) {
 		Policy:     *policyPath,
 	}
 	return writeInitOutput("openwrt", doc, *output, *force, options.json, []string{
-		fmt.Sprintf("clatch openwrt status --config %s", fallbackPath(*output, openwrt.DefaultConfigPath)),
+		fmt.Sprintf("clatch openwrt check --config %s", fallbackPath(*output, openwrt.DefaultConfigPath)),
+		fmt.Sprintf("clatch openwrt install --config %s", fallbackPath(*output, openwrt.DefaultConfigPath)),
 	})
 }
 
@@ -382,39 +380,4 @@ func fallbackPath(path, def string) string {
 		return path
 	}
 	return def
-}
-
-// detectHostNetwork makes a best-effort, non-destructive probe of the default
-// IPv4 route and interface address for `clatch init profile`.
-func detectHostNetwork() (ifaceName, hostCIDR, gateway, lanCIDR string) {
-	raw, err := system.Command("", "ip", "-j", "-4", "route", "show", "default")
-	if err != nil {
-		return "", "", "", ""
-	}
-	var routes []struct {
-		Gateway string `json:"gateway"`
-		Device  string `json:"dev"`
-	}
-	if json.Unmarshal(raw, &routes) != nil || len(routes) == 0 {
-		return "", "", "", ""
-	}
-	ifaceName = routes[0].Device
-	gateway = routes[0].Gateway
-	iface, err := net.InterfaceByName(ifaceName)
-	if err != nil {
-		return ifaceName, "", gateway, ""
-	}
-	addrs, err := iface.Addrs()
-	if err != nil {
-		return ifaceName, "", gateway, ""
-	}
-	for _, a := range addrs {
-		p, err := netip.ParsePrefix(a.String())
-		if err == nil && p.Addr().Is4() && p.Addr().IsGlobalUnicast() {
-			hostCIDR = p.String()
-			lanCIDR = p.Masked().String()
-			break
-		}
-	}
-	return ifaceName, hostCIDR, gateway, lanCIDR
 }

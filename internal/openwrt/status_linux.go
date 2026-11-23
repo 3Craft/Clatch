@@ -4,13 +4,9 @@ package openwrt
 
 import (
 	"fmt"
-	"net/netip"
 
 	"clatch-gateway/internal/guard"
-	"clatch-gateway/internal/policy"
 )
-
-const DefaultConfigPath = "/etc/clatch/openwrt.json"
 
 // UplinkStatus describes the verification and counter state of one guarded WAN uplink.
 type UplinkStatus struct {
@@ -33,24 +29,6 @@ type StatusReport struct {
 	UnmanagedEgressDevices []string       `json:"unmanaged_egress_devices,omitempty"`
 	Uplinks                []UplinkStatus `json:"uplinks,omitempty"`
 	Issues                 []string       `json:"issues,omitempty"`
-}
-
-// DirectPrefixes returns the canonical direct IPv4 prefixes loaded from the policy file.
-func (c Config) DirectPrefixes() []netip.Prefix {
-	out := make([]netip.Prefix, len(c.direct))
-	copy(out, c.direct)
-	return out
-}
-
-// LANPrefixes parses and returns the canonical protected LAN prefixes.
-func (c Config) LANPrefixes() ([]netip.Prefix, error) {
-	return policy.Parse(c.LAN)
-}
-
-// PolicyEntries builds the guard policy trie map matching WAN enforcement.
-func (c Config) PolicyEntries() guard.Policy {
-	entries := policy.Config{}.Entries(policy.Approved{Prefixes: c.direct})
-	return entries
 }
 
 // Status collects configuration and per-uplink enforcement status for OpenWrt.

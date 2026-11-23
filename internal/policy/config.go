@@ -216,7 +216,7 @@ func (c Config) TUNDevice() string {
 		return "tun0"
 	}
 	if c.IsTUN() {
-		return "jdn-tun"
+		return "clatch-tun"
 	}
 	return ""
 }
